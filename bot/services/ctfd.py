@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass
 from html import unescape
@@ -86,7 +87,9 @@ async def _get_json(session: aiohttp.ClientSession, url: str) -> dict:
                 f"CTFd redirected to {location}; check the URL and API token."
             )
         if resp.status in {401, 403}:
-            raise RuntimeError("CTFd rejected the API token or permissions.")
+            body = await resp.text()
+            message = _extract_error_message(body)
+            raise RuntimeError(f"CTFd API returned HTTP {resp.status}: {message}")
         if resp.status >= 400:
             body = (await resp.text())[:300]
             raise RuntimeError(f"CTFd API returned HTTP {resp.status}: {body}")
@@ -106,6 +109,18 @@ async def _get_json(session: aiohttp.ClientSession, url: str) -> dict:
         raise RuntimeError(f"CTFd API returned success=false: {message}")
 
     return payload
+
+
+def _extract_error_message(body: str) -> str:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return body[:300] or "empty response body"
+
+    if isinstance(payload, dict):
+        message = payload.get("message") or payload.get("errors") or payload
+        return str(message)
+    return str(payload)
 
 
 def _clean_text(value: object) -> str | None:
