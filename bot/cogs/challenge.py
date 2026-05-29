@@ -4,12 +4,261 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.db.repository import Repository
+from bot.db.repository import Challenge, CtfEvent, Repository
+from bot.services.ctfd import CtfdChallenge, fetch_ctfd_challenges
 from bot.utils.embeds import build_simple_embed
 
 
 # Topic channels where /challenge is allowed
 _TOPIC_CHANNELS = {"rev", "pwn", "web", "crypto", "for", "misc"}
+_TOPIC_CHOICES = ("REV", "PWN", "WEB", "CRYPTO", "FOR", "MISC")
+_CATEGORY_DEFAULTS = {
+    "rev": "REV",
+    "reverse": "REV",
+    "reversing": "REV",
+    "reverse engineering": "REV",
+    "pwn": "PWN",
+    "binary": "PWN",
+    "binary exploitation": "PWN",
+    "binex": "PWN",
+    "web": "WEB",
+    "web exploitation": "WEB",
+    "web security": "WEB",
+    "crypto": "CRYPTO",
+    "cryptography": "CRYPTO",
+    "for": "FOR",
+    "forensic": "FOR",
+    "forensics": "FOR",
+    "misc": "MISC",
+    "miscellaneous": "MISC",
+}
+_EMBED_DESCRIPTION_LIMIT = 3500
+_EMBED_FIELD_LIMIT = 1024
+_CATEGORY_PAGE_SIZE = 4
+_CATEGORY_MAPPING_TIMEOUT_SECONDS = 300
+_UNCATEGORIZED = "Uncategorized"
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _category_label(category: str | None) -> str:
+    label = " ".join((category or "").strip().split())
+    return label or _UNCATEGORIZED
+
+
+def _default_topic_for_category(category: str) -> str:
+    key = category.replace("_", " ").replace("-", " ")
+    key = " ".join(key.split()).casefold()
+    return _CATEGORY_DEFAULTS.get(key, "MISC")
+
+
+class CategoryMappingSelect(discord.ui.Select):
+    def __init__(
+        self,
+        mapping_view: "CategoryMappingView",
+        category: str,
+        row: int,
+    ) -> None:
+        self.mapping_view_ref = mapping_view
+        self.category = category
+        current_topic = mapping_view.mappings[category]
+        options = [
+            discord.SelectOption(
+                label=topic,
+                value=topic,
+                default=topic == current_topic,
+            )
+            for topic in _TOPIC_CHOICES
+        ]
+        super().__init__(
+            placeholder=_truncate_text(f"{category} -> {current_topic}", 150),
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        mapping_view = self.mapping_view_ref
+        mapping_view.mappings[self.category] = self.values[0]
+        mapping_view.refresh_items()
+        await interaction.response.edit_message(
+            embed=mapping_view.build_embed(),
+            view=mapping_view,
+        )
+
+
+class CategoryMappingButton(discord.ui.Button):
+    def __init__(
+        self,
+        mapping_view: "CategoryMappingView",
+        action: str,
+        label: str,
+        style: discord.ButtonStyle,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(label=label, style=style, disabled=disabled, row=4)
+        self.mapping_view_ref = mapping_view
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        mapping_view = self.mapping_view_ref
+
+        if self.action == "prev":
+            mapping_view.page = max(0, mapping_view.page - 1)
+            mapping_view.refresh_items()
+            await interaction.response.edit_message(
+                embed=mapping_view.build_embed(),
+                view=mapping_view,
+            )
+            return
+
+        if self.action == "next":
+            mapping_view.page = min(mapping_view.total_pages - 1, mapping_view.page + 1)
+            mapping_view.refresh_items()
+            await interaction.response.edit_message(
+                embed=mapping_view.build_embed(),
+                view=mapping_view,
+            )
+            return
+
+        if self.action == "confirm":
+            mapping_view.confirmed = True
+            await interaction.response.edit_message(
+                embed=build_simple_embed(
+                    "Importing challenges",
+                    "Category mapping confirmed. Creating threads now...",
+                ),
+                view=None,
+            )
+            mapping_view.stop()
+            return
+
+        if self.action == "cancel":
+            mapping_view.cancelled = True
+            await interaction.response.edit_message(
+                embed=build_simple_embed(
+                    "Import cancelled",
+                    "No challenge threads were created.",
+                ),
+                view=None,
+            )
+            mapping_view.stop()
+
+
+class CategoryMappingView(discord.ui.View):
+    def __init__(
+        self,
+        author_id: int,
+        categories: list[str],
+        challenge_count: int,
+    ) -> None:
+        super().__init__(timeout=_CATEGORY_MAPPING_TIMEOUT_SECONDS)
+        self.author_id = author_id
+        self.categories = categories
+        self.challenge_count = challenge_count
+        self.page = 0
+        self.confirmed = False
+        self.cancelled = False
+        self.timed_out = False
+        self.mappings = {
+            category: _default_topic_for_category(category) for category in categories
+        }
+        self.refresh_items()
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, (len(self.categories) + _CATEGORY_PAGE_SIZE - 1) // _CATEGORY_PAGE_SIZE)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.author_id:
+            return True
+        await interaction.response.send_message(
+            embed=build_simple_embed(
+                "Not your import",
+                "Only the admin who ran `/challenge-fetch` can choose this mapping.",
+            ),
+            ephemeral=True,
+        )
+        return False
+
+    async def on_timeout(self) -> None:
+        self.timed_out = True
+        self.stop()
+
+    def refresh_items(self) -> None:
+        self.clear_items()
+        start = self.page * _CATEGORY_PAGE_SIZE
+        page_categories = self.categories[start : start + _CATEGORY_PAGE_SIZE]
+        for row, category in enumerate(page_categories):
+            self.add_item(CategoryMappingSelect(self, category, row))
+
+        self.add_item(
+            CategoryMappingButton(
+                self,
+                "prev",
+                "Previous",
+                discord.ButtonStyle.secondary,
+                disabled=self.page == 0,
+            )
+        )
+        self.add_item(
+            CategoryMappingButton(
+                self,
+                "next",
+                "Next",
+                discord.ButtonStyle.secondary,
+                disabled=self.page >= self.total_pages - 1,
+            )
+        )
+        self.add_item(
+            CategoryMappingButton(
+                self,
+                "confirm",
+                "Import",
+                discord.ButtonStyle.success,
+            )
+        )
+        self.add_item(
+            CategoryMappingButton(
+                self,
+                "cancel",
+                "Cancel",
+                discord.ButtonStyle.danger,
+            )
+        )
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Map CTFd categories",
+            color=discord.Color.gold(),
+        )
+        embed.description = (
+            f"Fetched `{self.challenge_count}` challenges across "
+            f"`{len(self.categories)}` CTFd categories.\n"
+            "Choose where each CTFd category should be imported before creating threads."
+        )
+
+        start = self.page * _CATEGORY_PAGE_SIZE
+        page_categories = self.categories[start : start + _CATEGORY_PAGE_SIZE]
+        lines = [
+            f"`{category}` -> **{self.mappings[category]}**"
+            for category in page_categories
+        ]
+        embed.add_field(
+            name=f"Page {self.page + 1}/{self.total_pages}",
+            value="\n".join(lines) or "No categories found.",
+            inline=False,
+        )
+        embed.set_footer(
+            text="Mapping is not saved; the bot asks again every time /challenge-fetch runs."
+        )
+        return embed
 
 
 class ChallengeCog(commands.Cog):
@@ -39,6 +288,172 @@ class ChallengeCog(commands.Cog):
             return name.upper()
         return None
 
+    @staticmethod
+    def _sanitize_challenge_name(name: str) -> str:
+        return name.strip().replace("\n", " ")[:100]
+
+    @staticmethod
+    def _challenge_key(name: str, category: str) -> tuple[str, str]:
+        return name.casefold(), category.casefold()
+
+    @staticmethod
+    def _truncate(value: str, limit: int) -> str:
+        return _truncate_text(value, limit)
+
+    async def _thread_is_live(self, thread_id: int) -> bool:
+        fetched = self.bot.get_channel(thread_id)
+        if fetched is not None:
+            return True
+        try:
+            fetched = await self.bot.fetch_channel(thread_id)
+        except discord.NotFound:
+            return False
+        except (discord.Forbidden, discord.HTTPException):
+            return True
+        return fetched is not None
+
+    async def _existing_challenge_index(
+        self, guild_id: int, ctftime_event_id: int
+    ) -> dict[tuple[str, str], Challenge]:
+        existing = await self.repo.list_challenges(guild_id, ctftime_event_id)
+        index: dict[tuple[str, str], Challenge] = {}
+        for chall in existing:
+            if await self._thread_is_live(chall.thread_id):
+                index[self._challenge_key(chall.challenge_name, chall.category)] = chall
+            else:
+                await self.repo.delete_challenge_by_thread(chall.thread_id)
+        return index
+
+    def _get_topic_channel(
+        self, guild: discord.Guild, event: CtfEvent, topic: str
+    ) -> discord.TextChannel | None:
+        channel_id = None
+        for key in (topic, topic.title(), topic.lower()):
+            raw_channel_id = event.channels.get(key)
+            if raw_channel_id is not None:
+                try:
+                    channel_id = int(raw_channel_id)
+                except (TypeError, ValueError):
+                    channel_id = None
+                break
+
+        channel = guild.get_channel(channel_id) if channel_id is not None else None
+        if channel is None and channel_id is not None:
+            channel = self.bot.get_channel(channel_id)
+        if isinstance(channel, discord.TextChannel):
+            return channel
+
+        category = guild.get_channel(event.category_id)
+        if isinstance(category, discord.CategoryChannel):
+            channel = discord.utils.get(category.text_channels, name=topic.lower())
+            if isinstance(channel, discord.TextChannel):
+                return channel
+        return None
+
+    def _build_manual_challenge_embed(
+        self, event: CtfEvent, name: str, topic: str
+    ) -> discord.Embed:
+        return build_simple_embed(
+            f"Challenge: {name}",
+            f"**CTF:** {event.event_title}\n"
+            f"**Category:** {topic}\n"
+            f"**Status:** Open\n\n"
+            f"Good luck! When solved, an admin will use `/done` here.",
+        )
+
+    def _build_ctfd_challenge_embed(
+        self, event: CtfEvent, challenge: CtfdChallenge, topic: str
+    ) -> discord.Embed:
+        description = challenge.description or "No description provided."
+        embed = discord.Embed(
+            title=self._truncate(f"Challenge: {challenge.name}", 256),
+            url=challenge.url,
+            description=self._truncate(description, _EMBED_DESCRIPTION_LIMIT),
+            color=discord.Color.gold(),
+        )
+
+        meta = [
+            f"CTF: {event.event_title}",
+            f"Category: {topic}",
+            f"CTFd ID: `{challenge.id}`",
+        ]
+        if challenge.value is not None:
+            meta.append(f"Points: `{challenge.value}`")
+        if challenge.solves is not None:
+            meta.append(f"Solves: `{challenge.solves}`")
+        if challenge.challenge_type:
+            meta.append(f"Type: `{challenge.challenge_type}`")
+        embed.add_field(
+            name="Meta",
+            value=self._truncate("\n".join(meta), _EMBED_FIELD_LIMIT),
+            inline=False,
+        )
+
+        if challenge.connection_info:
+            embed.add_field(
+                name="Connection",
+                value=self._truncate(challenge.connection_info, _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
+
+        if challenge.files:
+            file_lines = [
+                f"[file {index}]({url})" for index, url in enumerate(challenge.files[:8], 1)
+            ]
+            if len(challenge.files) > 8:
+                file_lines.append(f"... and {len(challenge.files) - 8} more")
+            embed.add_field(
+                name="Files",
+                value=self._truncate("\n".join(file_lines), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
+
+        if challenge.tags:
+            embed.add_field(
+                name="Tags",
+                value=self._truncate(", ".join(challenge.tags), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
+
+        return embed
+
+    async def _create_tracked_challenge_thread(
+        self,
+        guild: discord.Guild,
+        event: CtfEvent,
+        channel: discord.TextChannel,
+        name: str,
+        topic: str,
+        embed: discord.Embed,
+    ) -> discord.Thread:
+        thread = await channel.create_thread(
+            name=name,
+            type=discord.ChannelType.public_thread,
+        )
+
+        await self.repo.create_challenge(
+            guild_id=guild.id,
+            ctftime_event_id=event.ctftime_event_id,
+            challenge_name=name,
+            category=topic,
+            thread_id=thread.id,
+            channel_id=channel.id,
+        )
+
+        await thread.send(embed=embed)
+        return thread
+
+    @staticmethod
+    def _summary_block(items: list[str], limit: int = 10) -> str:
+        if not items:
+            return "None"
+        visible = items[:limit]
+        text = "\n".join(visible)
+        hidden = len(items) - len(visible)
+        if hidden > 0:
+            text += f"\n... and {hidden} more"
+        return text
+
     # ── /challenge <name> ─────────────────────────────────────────────
 
     @app_commands.command(
@@ -47,8 +462,7 @@ class ChallengeCog(commands.Cog):
     )
     @app_commands.describe(name="Challenge name")
     async def challenge(self, interaction: discord.Interaction, name: str) -> None:
-        # Sanitize: strip whitespace, truncate to 100 chars, no newlines
-        name = name.strip().replace("\n", " ")[:100]
+        name = self._sanitize_challenge_name(name)
         if not name:
             await interaction.response.send_message(
                 embed=build_simple_embed("Invalid name", "Challenge name cannot be empty."),
@@ -96,67 +510,29 @@ class ChallengeCog(commands.Cog):
             )
             return
 
-        # Check duplicate challenge name within same event + category
-        existing = await self.repo.list_challenges(
+        existing = await self._existing_challenge_index(
             interaction.guild.id, event.ctftime_event_id
         )
-        for chall in existing:
-            if (
-                chall.challenge_name.lower() == name.lower()
-                and chall.category.lower() == topic.lower()
-            ):
-                # Thread was deleted manually — clean up stale DB entry and allow re-creation
-                fetched = self.bot.get_channel(chall.thread_id)
-                if fetched is None:
-                    try:
-                        fetched = await self.bot.fetch_channel(chall.thread_id)
-                    except discord.NotFound:
-                        fetched = None
-                    except discord.Forbidden:
-                        pass
-                if fetched is None:
-                    await self.repo.delete_challenge_by_thread(chall.thread_id)
-                    continue
-
-                await interaction.response.send_message(
-                    embed=build_simple_embed(
-                        "Duplicate challenge",
-                        f"Challenge **{name}** already exists in {topic} (<#{chall.thread_id}>).",
-                    ),
-                    ephemeral=True,
-                )
-                return
+        duplicate = existing.get(self._challenge_key(name, topic))
+        if duplicate is not None:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Duplicate challenge",
+                    f"Challenge **{name}** already exists in {topic} (<#{duplicate.thread_id}>).",
+                ),
+                ephemeral=True,
+            )
+            return
 
         await interaction.response.defer()
 
-        # Create thread
-        thread = await channel.create_thread(
+        thread = await self._create_tracked_challenge_thread(
+            guild=interaction.guild,
+            event=event,
+            channel=channel,
             name=name,
-            type=discord.ChannelType.public_thread,
-        )
-
-        # Save to DB
-        challenge_id = await self.repo.create_challenge(
-            guild_id=interaction.guild.id,
-            ctftime_event_id=event.ctftime_event_id,
-            challenge_name=name,
-            category=topic,
-            thread_id=thread.id,
-            channel_id=channel.id,
-        )
-
-        # Find @ctf role to ping
-        ctf_role = discord.utils.get(interaction.guild.roles, name="ctf")
-
-        await thread.send(
-            content=ctf_role.mention if ctf_role else None,
-            embed=build_simple_embed(
-                f"Challenge: {name}",
-                f"**CTF:** {event.event_title}\n"
-                f"**Category:** {topic}\n"
-                f"**Status:** Open\n\n"
-                f"Good luck! When solved, an admin will use `/done` here.",
-            ),
+            topic=topic,
+            embed=self._build_manual_challenge_embed(event, name, topic),
         )
 
         await interaction.followup.send(
@@ -165,6 +541,226 @@ class ChallengeCog(commands.Cog):
                 f"Thread **{name}** created in {topic} → {thread.mention}",
             )
         )
+
+    # ── /challenge-fetch ─────────────────────────────────────────────
+
+    @app_commands.command(
+        name="challenge-fetch",
+        description="Fetch CTFd challenges and create topic threads",
+    )
+    @app_commands.describe(
+        event_id="CTFtime event ID created by /ctf join",
+        url="CTFd base URL, for example http://localhost:8000",
+        auth_token="CTFd API token (optional for public challenges)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def challenge_fetch(
+        self,
+        interaction: discord.Interaction,
+        event_id: int,
+        url: str,
+        auth_token: str | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+                ephemeral=True,
+            )
+            return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Admin only", "Only admins can fetch challenges in bulk."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        url = url.strip()
+        if not url:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Invalid URL", "CTFd URL cannot be empty."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        event = await self.repo.get_ctf_event(interaction.guild.id, event_id)
+        if event is None:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Event not found",
+                    f"Event ID {event_id} not found in this server. Run `/ctf join` first.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            fetched_challenges = await fetch_ctfd_challenges(url, auth_token)
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "CTFd fetch failed",
+                    self._truncate(str(exc), 1800),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if not fetched_challenges:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "No challenges",
+                    "CTFd returned an empty challenge list.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        categories = sorted(
+            {_category_label(challenge.category) for challenge in fetched_challenges},
+            key=str.casefold,
+        )
+        mapping_view = CategoryMappingView(
+            author_id=interaction.user.id,
+            categories=categories,
+            challenge_count=len(fetched_challenges),
+        )
+        mapping_message = await interaction.followup.send(
+            embed=mapping_view.build_embed(),
+            view=mapping_view,
+            ephemeral=True,
+            wait=True,
+        )
+        await mapping_view.wait()
+
+        if mapping_view.cancelled:
+            return
+
+        if not mapping_view.confirmed:
+            try:
+                await mapping_message.edit(
+                    embed=build_simple_embed(
+                        "Mapping timed out",
+                        "No challenge threads were created. Run `/challenge-fetch` again.",
+                    ),
+                    view=None,
+                )
+            except discord.HTTPException:
+                await interaction.followup.send(
+                    embed=build_simple_embed(
+                        "Mapping timed out",
+                        "No challenge threads were created. Run `/challenge-fetch` again.",
+                    ),
+                    ephemeral=True,
+                )
+            return
+
+        category_mapping = dict(mapping_view.mappings)
+        existing = await self._existing_challenge_index(
+            interaction.guild.id, event.ctftime_event_id
+        )
+        existing_by_name = {
+            challenge.challenge_name.casefold(): challenge
+            for challenge in existing.values()
+        }
+        created: list[str] = []
+        skipped: list[str] = []
+        failed: list[str] = []
+
+        for ctfd_challenge in fetched_challenges:
+            category = _category_label(ctfd_challenge.category)
+            topic = category_mapping.get(category, "MISC")
+            channel = self._get_topic_channel(interaction.guild, event, topic)
+            name = self._sanitize_challenge_name(ctfd_challenge.name)
+            if not name:
+                failed.append(f"CTFd ID {ctfd_challenge.id}: empty name")
+                continue
+
+            key = self._challenge_key(name, topic)
+            duplicate = existing.get(key)
+            if duplicate is not None:
+                skipped.append(f"{name} ({topic}) -> <#{duplicate.thread_id}>")
+                continue
+
+            duplicate_by_name = existing_by_name.get(name.casefold())
+            if duplicate_by_name is not None:
+                skipped.append(
+                    f"{name} already tracked in {duplicate_by_name.category} "
+                    f"-> <#{duplicate_by_name.thread_id}>"
+                )
+                continue
+
+            if channel is None:
+                failed.append(f"{name} ({topic}): missing topic channel")
+                continue
+
+            try:
+                thread = await self._create_tracked_challenge_thread(
+                    guild=interaction.guild,
+                    event=event,
+                    channel=channel,
+                    name=name,
+                    topic=topic,
+                    embed=self._build_ctfd_challenge_embed(
+                        event, ctfd_challenge, topic
+                    ),
+                )
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                failed.append(f"{name} ({topic}): {exc}")
+                continue
+
+            created.append(f"{name} ({topic}) -> {thread.mention}")
+            challenge = Challenge(
+                id=0,
+                guild_id=interaction.guild.id,
+                ctftime_event_id=event.ctftime_event_id,
+                challenge_name=name,
+                category=topic,
+                thread_id=thread.id,
+                channel_id=channel.id,
+                status="open",
+                solved_by=[],
+                created_at="",
+                solved_at=None,
+            )
+            existing[key] = challenge
+            existing_by_name[name.casefold()] = challenge
+
+        embed = discord.Embed(
+            title=f"CTFd challenge fetch - {event.event_title}",
+            color=discord.Color.gold(),
+        )
+        embed.description = (
+            f"Fetched: `{len(fetched_challenges)}` | "
+            f"Created: `{len(created)}` | "
+            f"Skipped: `{len(skipped)}` | "
+            f"Failed: `{len(failed)}`"
+        )
+        embed.add_field(
+            name="Created",
+            value=self._truncate(self._summary_block(created), _EMBED_FIELD_LIMIT),
+            inline=False,
+        )
+        if skipped:
+            embed.add_field(
+                name="Skipped duplicates",
+                value=self._truncate(self._summary_block(skipped), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
+        if failed:
+            embed.add_field(
+                name="Failed",
+                value=self._truncate(self._summary_block(failed), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
+
+        try:
+            await mapping_message.edit(embed=embed, view=None)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /done @user ... ───────────────────────────────────────────────
 

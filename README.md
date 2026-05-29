@@ -5,12 +5,12 @@ A Discord bot for organizing Capture The Flag competitions. It integrates with C
 ## Features
 
 - **CTFtime integration** — browse and join upcoming CTF events with pagination
-- **Challenge management** — create threads per challenge, track solved/open status, ping `@ctf` role on creation
+- **Challenge management** — create threads per challenge, bulk-import CTFd challenges, track solved/open status
 - **Live scoreboard** — periodic polling with change notifications for CTFd and rCTF
 - **Message statistics** — per-user leaderboard, activity breakdown, and historical backfill
 - **Multi-event support** — run multiple CTFs simultaneously, each with its own category
 - **Role-based access** — `@ctf` role members can mark challenges as solved; admin commands remain admin-only
-- **Audit logging** — automatic private `BOT` category with command logs and database backups
+- **Audit logging** — automatic private `BOT` category with command logs and manual database backups
 
 ## Requirements
 
@@ -37,7 +37,7 @@ python -m bot.main
 |---|---|---|---|
 | `DISCORD_TOKEN` | Yes | — | Discord bot token |
 | `DATABASE_PATH` | No | `ctf_bot.db` | Path to SQLite database file |
-| `SCOREBOARD_POLL_SECONDS` | No | `90` | Scoreboard polling interval (seconds) |
+| `SCOREBOARD_POLL_SECONDS` | No | `30` | Scoreboard polling interval (seconds) |
 | `SCOREBOARD_TOP_N` | No | `10` | Number of teams shown in scoreboard updates |
 | `SCOREBOARD_TEAM_NAME` | No | — | Your team name (for scoreboard tracking) |
 | `TIMEZONE` | No | `UTC` | Timezone offset for event display (e.g. `UTC+7`) |
@@ -51,7 +51,7 @@ python -m bot.main
 | Command | Description | Permission |
 |---|---|---|
 | `/ctf upcoming [limit]` | Browse upcoming CTFs from CTFtime | Everyone |
-| `/ctf join <event_id>` | Create category and channels for an event | Everyone |
+| `/ctf join <event_id>` | Create category and channels for an event | Admin |
 | `/ctf list` | List joined CTFs and their event IDs | Everyone |
 | `/ctf hidden [event_id]` | Hide a CTF category from non-admins | Admin |
 | `/ctf remove [event_id] password` | Delete a CTF category and all associated data | Admin |
@@ -61,6 +61,7 @@ python -m bot.main
 | Command | Description | Permission |
 |---|---|---|
 | `/challenge <name>` | Create a thread for a challenge (must be in a topic channel) | Everyone |
+| `/challenge-fetch <event_id> <url> [auth_token]` | Fetch CTFd challenges, ask an admin to map CTFd categories to topic channels, then create threads without pinging `@ctf` per challenge | Admin |
 | `/done <solver> [solver2] ...` | Mark a challenge as solved and rename the thread | Admin / `@ctf` role |
 | `/challenges [event_id]` | List all challenges with status and thread links | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
@@ -85,8 +86,9 @@ python -m bot.main
 
 ```
 1. /ctf join <event_id>          → Bot creates category with topic channels
-2. Go to a topic channel (rev, pwn, web, ...)
-3. /challenge <name>             → Bot creates a thread and pings @ctf
+2. /challenge-fetch <event_id> <ctfd_url> [token]
+                                  → Bot asks how to map CTFd categories, then imports into topic threads
+3. Or go to a topic channel and run /challenge <name> for manual threads
 4. Work on the challenge in the thread
 5. /done @solver                 → Mark solved, thread renamed to [DONE]
 6. /challenges                   → Overview with clickable thread links
@@ -113,7 +115,7 @@ scoreboard    — live scoreboard updates
 On startup, the bot creates a private `BOT` category visible only to admins:
 
 - **#log** — command usage logs
-- **#backup** — database backup after each slash command invocation
+- **#backup** — database uploads created by `/backup`
 
 ## Permissions
 
@@ -135,7 +137,9 @@ The bot requires these Discord permissions:
 
 ## Notes
 
-- The `@ctf` role must be created manually in your server for the challenge ping and `/done` access to work.
+- The `@ctf` role must be created manually in your server for `/done` access to work.
+- `/challenge-fetch` asks for category mapping every run, so new CTFd categories added mid-event can be routed before import.
+- `/challenge-fetch` accepts either a full CTFd URL (`http://localhost:8000`) or a host-only URL (`localhost:8000`).
 - Message statistics only track messages sent after the bot is deployed, unless you run `/stats sync`.
 - Scoreboard polling for rCTF uses the public API directly — no browser dependency required.
 - The bot uses SQLite. For production use, ensure the database file is on a persistent volume.

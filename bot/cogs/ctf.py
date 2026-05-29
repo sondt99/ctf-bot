@@ -52,10 +52,20 @@ class CtfCog(commands.Cog):
 
     @ctf.command(name="join", description="Create category and channels for a CTF")
     @app_commands.describe(event_id="CTFtime event ID")
+    @app_commands.default_permissions(administrator=True)
     async def join(self, interaction: discord.Interaction, event_id: int) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(
                 embed=build_simple_embed("Guild only", "Use this in a server."),
+                ephemeral=True,
+            )
+            return
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Admin only", "Only admins can create CTF channels."
+                ),
+                ephemeral=True,
             )
             return
 
@@ -66,6 +76,7 @@ class CtfCog(commands.Cog):
                     "CTF already configured",
                     f"Event already exists: {existing.event_title} (ID {existing.ctftime_event_id}).",
                 ),
+                ephemeral=True,
             )
             return
 
