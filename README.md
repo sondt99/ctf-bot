@@ -61,7 +61,7 @@ python -m bot.main
 | Command | Description | Permission |
 |---|---|---|
 | `/challenge <name>` | Create a thread for a challenge (must be in a topic channel) | Everyone |
-| `/challenge-fetch <event_id> <url> [auth_token]` | Fetch CTFd challenges, ask an admin to map CTFd categories to topic channels, then create threads without pinging `@ctf` per challenge | Admin |
+| `/challenge-fetch <event_id> <url> [auth_token]` | Fetch CTFd challenges, map CTFd categories to topic channels, create missing threads, and refresh CTFd embeds only when description/files change | Admin |
 | `/done <solver> [solver2] ...` | Mark a challenge as solved and rename the thread | Admin / `@ctf` role |
 | `/challenges [event_id]` | List all challenges with status and thread links | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
@@ -139,6 +139,7 @@ The bot requires these Discord permissions:
 
 - The `@ctf` role must be created manually in your server for `/done` access to work.
 - `/challenge-fetch` asks for category mapping every run, so new CTFd categories added mid-event can be routed before import.
+- Existing CTFd challenge threads are updated only when the description or file links change; point/solve-count changes alone are skipped. Threads marked with `/done` are not updated.
 - `/challenge-fetch` accepts either a full CTFd URL (`http://localhost:8000`) or a host-only URL (`localhost:8000`).
 - Message statistics only track messages sent after the bot is deployed, unless you run `/stats sync`.
 - Scoreboard polling for rCTF uses the public API directly — no browser dependency required.

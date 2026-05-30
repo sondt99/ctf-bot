@@ -50,6 +50,10 @@ class Challenge:
     solved_by: list[int]
     created_at: str
     solved_at: str | None
+    ctfd_challenge_id: int | None = None
+    ctfd_description: str | None = None
+    ctfd_files: list[str] | None = None
+    ctfd_message_id: int | None = None
 
 
 @dataclass
@@ -506,6 +510,15 @@ class Repository:
     def _row_to_challenge(self, row: tuple) -> Challenge:
         solved_by_raw = row[8]
         solved_by = json.loads(solved_by_raw) if solved_by_raw else []
+        ctfd_files_raw = row[13] if len(row) > 13 else None
+        ctfd_files = None
+        if ctfd_files_raw:
+            try:
+                parsed_files = json.loads(ctfd_files_raw)
+            except json.JSONDecodeError:
+                parsed_files = None
+            if isinstance(parsed_files, list):
+                ctfd_files = [str(item) for item in parsed_files]
         return Challenge(
             id=row[0],
             guild_id=row[1],
@@ -518,6 +531,10 @@ class Repository:
             solved_by=solved_by,
             created_at=row[9],
             solved_at=row[10],
+            ctfd_challenge_id=row[11] if len(row) > 11 else None,
+            ctfd_description=row[12] if len(row) > 12 else None,
+            ctfd_files=ctfd_files,
+            ctfd_message_id=row[14] if len(row) > 14 else None,
         )
 
     async def create_challenge(
@@ -528,18 +545,28 @@ class Repository:
         category: str,
         thread_id: int,
         channel_id: int,
+        *,
+        ctfd_challenge_id: int | None = None,
+        ctfd_description: str | None = None,
+        ctfd_files: list[str] | None = None,
+        ctfd_message_id: int | None = None,
     ) -> int:
         created_at = _utc_now_iso()
+        ctfd_files_json = (
+            json.dumps(ctfd_files, ensure_ascii=False) if ctfd_files is not None else None
+        )
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
                 INSERT INTO challenges
                   (guild_id, ctftime_event_id, challenge_name, category,
-                   thread_id, channel_id, status, solved_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, ?)
+                   thread_id, channel_id, status, solved_by, created_at,
+                   ctfd_challenge_id, ctfd_description, ctfd_files_json, ctfd_message_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?, ?, ?, ?)
                 """,
                 (guild_id, ctftime_event_id, challenge_name, category,
-                 thread_id, channel_id, created_at),
+                 thread_id, channel_id, created_at, ctfd_challenge_id,
+                 ctfd_description, ctfd_files_json, ctfd_message_id),
             )
             challenge_id = cursor.lastrowid
             await db.commit()
@@ -550,7 +577,8 @@ class Repository:
             cursor = await db.execute(
                 """
                 SELECT id, guild_id, ctftime_event_id, challenge_name, category,
-                       thread_id, channel_id, status, solved_by, created_at, solved_at
+                       thread_id, channel_id, status, solved_by, created_at, solved_at,
+                       ctfd_challenge_id, ctfd_description, ctfd_files_json, ctfd_message_id
                 FROM challenges WHERE thread_id=?
                 """,
                 (thread_id,),
@@ -560,6 +588,33 @@ class Repository:
         if not row:
             return None
         return self._row_to_challenge(row)
+
+    async def update_challenge_ctfd_metadata(
+        self,
+        thread_id: int,
+        ctfd_challenge_id: int,
+        ctfd_description: str | None,
+        ctfd_files: list[str],
+        ctfd_message_id: int | None,
+    ) -> None:
+        ctfd_files_json = json.dumps(ctfd_files, ensure_ascii=False)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE challenges
+                SET ctfd_challenge_id=?, ctfd_description=?,
+                    ctfd_files_json=?, ctfd_message_id=?
+                WHERE thread_id=?
+                """,
+                (
+                    ctfd_challenge_id,
+                    ctfd_description,
+                    ctfd_files_json,
+                    ctfd_message_id,
+                    thread_id,
+                ),
+            )
+            await db.commit()
 
     async def mark_challenge_done(
         self, thread_id: int, solver_ids: list[int]
@@ -584,7 +639,8 @@ class Repository:
             cursor = await db.execute(
                 """
                 SELECT id, guild_id, ctftime_event_id, challenge_name, category,
-                       thread_id, channel_id, status, solved_by, created_at, solved_at
+                       thread_id, channel_id, status, solved_by, created_at, solved_at,
+                       ctfd_challenge_id, ctfd_description, ctfd_files_json, ctfd_message_id
                 FROM challenges
                 WHERE guild_id=? AND ctftime_event_id=?
                 ORDER BY created_at ASC

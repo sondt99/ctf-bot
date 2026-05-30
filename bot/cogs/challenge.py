@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -300,6 +302,127 @@ class ChallengeCog(commands.Cog):
     def _truncate(value: str, limit: int) -> str:
         return _truncate_text(value, limit)
 
+    @staticmethod
+    def _is_ctfd_challenge_embed(embed: discord.Embed) -> bool:
+        return any(
+            field.name == "Meta" and "CTFd ID:" in str(field.value)
+            for field in embed.fields
+        )
+
+    @staticmethod
+    def _ctfd_description_from_embed(embed: discord.Embed) -> str | None:
+        description = (embed.description or "").strip()
+        if not description or description == "No description provided.":
+            return None
+        return description
+
+    @staticmethod
+    def _ctfd_files_from_embed(embed: discord.Embed) -> list[str]:
+        for field in embed.fields:
+            if field.name == "Files":
+                return re.findall(r"\]\(([^)]+)\)", str(field.value))
+        return []
+
+    async def _get_thread(self, thread_id: int) -> discord.Thread | None:
+        fetched = self.bot.get_channel(thread_id)
+        if isinstance(fetched, discord.Thread):
+            return fetched
+        try:
+            fetched = await self.bot.fetch_channel(thread_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+        return fetched if isinstance(fetched, discord.Thread) else None
+
+    async def _get_ctfd_challenge_message(
+        self, thread: discord.Thread, challenge: Challenge
+    ) -> discord.Message | None:
+        if challenge.ctfd_message_id is not None:
+            try:
+                message = await thread.fetch_message(challenge.ctfd_message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                message = None
+            else:
+                if any(self._is_ctfd_challenge_embed(embed) for embed in message.embeds):
+                    return message
+
+        bot_user_id = self.bot.user.id if self.bot.user is not None else None
+        try:
+            async for message in thread.history(limit=50, oldest_first=True):
+                if bot_user_id is not None and message.author.id != bot_user_id:
+                    continue
+                if any(self._is_ctfd_challenge_embed(embed) for embed in message.embeds):
+                    return message
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+        return None
+
+    async def _maybe_update_existing_ctfd_challenge(
+        self,
+        event: CtfEvent,
+        ctfd_challenge: CtfdChallenge,
+        topic: str,
+        existing: Challenge,
+    ) -> str:
+        if existing.status == "done":
+            return "done"
+
+        thread = await self._get_thread(existing.thread_id)
+        if thread is None:
+            return "missing-thread"
+
+        message = await self._get_ctfd_challenge_message(thread, existing)
+        old_description = existing.ctfd_description
+        old_files = existing.ctfd_files
+        metadata_known = (
+            existing.ctfd_challenge_id is not None
+            or existing.ctfd_message_id is not None
+            or old_description is not None
+            or old_files is not None
+        )
+
+        if not metadata_known and message is not None:
+            for embed in message.embeds:
+                if self._is_ctfd_challenge_embed(embed):
+                    old_description = self._ctfd_description_from_embed(embed)
+                    old_files = self._ctfd_files_from_embed(embed)
+                    metadata_known = True
+                    break
+
+        if not metadata_known:
+            return "tracked"
+
+        new_description = ctfd_challenge.description
+        new_files = list(ctfd_challenge.files)
+        changed = old_description != new_description or (old_files or []) != new_files
+        message_id = message.id if message is not None else existing.ctfd_message_id
+
+        if not changed:
+            await self.repo.update_challenge_ctfd_metadata(
+                existing.thread_id,
+                ctfd_challenge.id,
+                new_description,
+                new_files,
+                message_id,
+            )
+            return "unchanged"
+
+        embed = self._build_ctfd_challenge_embed(event, ctfd_challenge, topic)
+        if message is not None:
+            await message.edit(embed=embed)
+            message_id = message.id
+        else:
+            sent = await thread.send(embed=embed)
+            message_id = sent.id
+
+        await self.repo.update_challenge_ctfd_metadata(
+            existing.thread_id,
+            ctfd_challenge.id,
+            new_description,
+            new_files,
+            message_id,
+        )
+        return "updated"
+
     async def _thread_is_live(self, thread_id: int) -> bool:
         fetched = self.bot.get_channel(thread_id)
         if fetched is not None:
@@ -425,12 +548,14 @@ class ChallengeCog(commands.Cog):
         name: str,
         topic: str,
         embed: discord.Embed,
+        ctfd_challenge: CtfdChallenge | None = None,
     ) -> discord.Thread:
         thread = await channel.create_thread(
             name=name,
             type=discord.ChannelType.public_thread,
         )
 
+        message = await thread.send(embed=embed)
         await self.repo.create_challenge(
             guild_id=guild.id,
             ctftime_event_id=event.ctftime_event_id,
@@ -438,9 +563,14 @@ class ChallengeCog(commands.Cog):
             category=topic,
             thread_id=thread.id,
             channel_id=channel.id,
+            ctfd_challenge_id=ctfd_challenge.id if ctfd_challenge is not None else None,
+            ctfd_description=(
+                ctfd_challenge.description if ctfd_challenge is not None else None
+            ),
+            ctfd_files=list(ctfd_challenge.files) if ctfd_challenge is not None else None,
+            ctfd_message_id=message.id if ctfd_challenge is not None else None,
         )
 
-        await thread.send(embed=embed)
         return thread
 
     @staticmethod
@@ -667,6 +797,7 @@ class ChallengeCog(commands.Cog):
             for challenge in existing.values()
         }
         created: list[str] = []
+        updated: list[str] = []
         skipped: list[str] = []
         failed: list[str] = []
 
@@ -682,7 +813,24 @@ class ChallengeCog(commands.Cog):
             key = self._challenge_key(name, topic)
             duplicate = existing.get(key)
             if duplicate is not None:
-                skipped.append(f"{name} ({topic}) -> <#{duplicate.thread_id}>")
+                try:
+                    outcome = await self._maybe_update_existing_ctfd_challenge(
+                        event, ctfd_challenge, topic, duplicate
+                    )
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    failed.append(f"{name} ({topic}): update failed: {exc}")
+                    continue
+
+                if outcome == "updated":
+                    updated.append(f"{name} ({topic}) -> <#{duplicate.thread_id}>")
+                elif outcome == "done":
+                    skipped.append(f"{name} ({topic}) already done -> <#{duplicate.thread_id}>")
+                elif outcome == "unchanged":
+                    skipped.append(f"{name} ({topic}) unchanged -> <#{duplicate.thread_id}>")
+                elif outcome == "missing-thread":
+                    failed.append(f"{name} ({topic}): tracked thread not found")
+                else:
+                    skipped.append(f"{name} ({topic}) already tracked -> <#{duplicate.thread_id}>")
                 continue
 
             duplicate_by_name = existing_by_name.get(name.casefold())
@@ -707,6 +855,7 @@ class ChallengeCog(commands.Cog):
                     embed=self._build_ctfd_challenge_embed(
                         event, ctfd_challenge, topic
                     ),
+                    ctfd_challenge=ctfd_challenge,
                 )
             except (discord.Forbidden, discord.HTTPException) as exc:
                 failed.append(f"{name} ({topic}): {exc}")
@@ -725,6 +874,9 @@ class ChallengeCog(commands.Cog):
                 solved_by=[],
                 created_at="",
                 solved_at=None,
+                ctfd_challenge_id=ctfd_challenge.id,
+                ctfd_description=ctfd_challenge.description,
+                ctfd_files=list(ctfd_challenge.files),
             )
             existing[key] = challenge
             existing_by_name[name.casefold()] = challenge
@@ -736,6 +888,7 @@ class ChallengeCog(commands.Cog):
         embed.description = (
             f"Fetched: `{len(fetched_challenges)}` | "
             f"Created: `{len(created)}` | "
+            f"Updated: `{len(updated)}` | "
             f"Skipped: `{len(skipped)}` | "
             f"Failed: `{len(failed)}`"
         )
@@ -744,9 +897,15 @@ class ChallengeCog(commands.Cog):
             value=self._truncate(self._summary_block(created), _EMBED_FIELD_LIMIT),
             inline=False,
         )
+        if updated:
+            embed.add_field(
+                name="Updated",
+                value=self._truncate(self._summary_block(updated), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
         if skipped:
             embed.add_field(
-                name="Skipped duplicates",
+                name="Skipped",
                 value=self._truncate(self._summary_block(skipped), _EMBED_FIELD_LIMIT),
                 inline=False,
             )

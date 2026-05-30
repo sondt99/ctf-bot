@@ -56,6 +56,10 @@ CREATE TABLE IF NOT EXISTS challenges (
   solved_by TEXT,
   created_at TEXT NOT NULL,
   solved_at TEXT,
+  ctfd_challenge_id INTEGER,
+  ctfd_description TEXT,
+  ctfd_files_json TEXT,
+  ctfd_message_id INTEGER,
   FOREIGN KEY (guild_id, ctftime_event_id) REFERENCES ctf_events(guild_id, ctftime_event_id)
 );
 
@@ -218,4 +222,8 @@ async def init_db(db_path: str) -> None:
         await _migrate_scoreboard_state(db)
         await db.executescript(SCHEMA)
         await _ensure_column(db, "scoreboard_config", "team_name", "TEXT")
+        await _ensure_column(db, "challenges", "ctfd_challenge_id", "INTEGER")
+        await _ensure_column(db, "challenges", "ctfd_description", "TEXT")
+        await _ensure_column(db, "challenges", "ctfd_files_json", "TEXT")
+        await _ensure_column(db, "challenges", "ctfd_message_id", "INTEGER")
         await db.commit()
