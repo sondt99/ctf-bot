@@ -16,7 +16,6 @@ class CtfBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
-        intents.members = True
         intents.messages = True
         super().__init__(command_prefix="!", intents=intents)
         self.repo = Repository(DATABASE_PATH)

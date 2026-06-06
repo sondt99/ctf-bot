@@ -1317,22 +1317,19 @@ class ChallengeCog(commands.Cog):
                 )
                 return
 
-        # Collect @ctf role members
+        # Resolve @ctf role
         ctf_role = discord.utils.get(interaction.guild.roles, name="ctf")
-        if ctf_role is None or not ctf_role.members:
+        if ctf_role is None:
             await interaction.response.send_message(
                 embed=build_simple_embed(
-                    "No @ctf members",
-                    "No members with the @ctf role were found.",
+                    "Role not found",
+                    'No role named "ctf" exists in this server.',
                 ),
                 ephemeral=True,
             )
             return
 
-        # Build ping content — fall back to role mention if individual mentions overflow
-        individual = " ".join(m.mention for m in ctf_role.members)
-        ping_prefix = individual if len(individual) <= 1800 else ctf_role.mention
-        ping_content = f"{ping_prefix}\n{message}" if message else ping_prefix
+        ping_content = f"{ctf_role.mention}\n{message}" if message else ctf_role.mention
 
         # Find all open challenge threads for the event
         challenges = await self.repo.list_challenges(
@@ -1366,10 +1363,8 @@ class ChallengeCog(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 failed += 1
 
-        member_count = len(ctf_role.members)
         summary_lines = [
-            f"Pinged **{member_count}** @ctf member{'s' if member_count != 1 else ''}",
-            f"in **{pinged}/{len(open_challenges)}** open challenge threads.",
+            f"Pinged **@ctf** in **{pinged}/{len(open_challenges)}** open challenge threads.",
         ]
         if failed:
             summary_lines.append(f"Could not reach **{failed}** thread(s).")
