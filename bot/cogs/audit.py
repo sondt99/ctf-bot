@@ -16,6 +16,20 @@ class AuditCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.ready_once = False
+        self._channel_cache: dict[int, dict[str, discord.TextChannel]] = {}
+
+    async def _get_admin_channels(
+        self, guild: discord.Guild
+    ) -> dict[str, discord.TextChannel] | None:
+        cached = self._channel_cache.get(guild.id)
+        if cached is not None:
+            return cached
+        try:
+            _, channels = await ensure_bot_admin_category(guild)
+            self._channel_cache[guild.id] = channels
+            return channels
+        except Exception:
+            return None
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -24,16 +38,13 @@ class AuditCog(commands.Cog):
         self.ready_once = True
         for guild in self.bot.guilds:
             try:
-                await ensure_bot_admin_category(guild)
+                await self._get_admin_channels(guild)
             except Exception:
                 continue
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        try:
-            await ensure_bot_admin_category(guild)
-        except Exception:
-            return
+        await self._get_admin_channels(guild)
 
     @commands.Cog.listener()
     async def on_app_command_completion(
@@ -42,20 +53,23 @@ class AuditCog(commands.Cog):
         if interaction.guild is None:
             return
 
-        try:
-            _, channels = await ensure_bot_admin_category(interaction.guild)
-        except Exception:
+        channels = await self._get_admin_channels(interaction.guild)
+        if channels is None:
             return
 
         log_channel = channels["log"]
-
         user = interaction.user
         command_name = command.qualified_name
         log_embed = build_simple_embed(
             "Command Log",
             f"User: {user}\nCommand: /{command_name}\nTime: {datetime.now(timezone.utc).isoformat()}",
         )
-        await log_channel.send(embed=log_embed)
+        try:
+            await log_channel.send(embed=log_embed)
+        except discord.NotFound:
+            self._channel_cache.pop(interaction.guild.id, None)
+        except discord.HTTPException:
+            pass
 
     @commands.Cog.listener()
     async def on_app_command_error(
@@ -63,18 +77,31 @@ class AuditCog(commands.Cog):
         interaction: discord.Interaction,
         error: discord.app_commands.AppCommandError,
     ) -> None:
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.send_message(
+                    embed=build_simple_embed(
+                        "Command Error",
+                        "An unexpected error occurred. Please try again.",
+                    ),
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+
         if interaction.guild is None:
             return
-        try:
-            _, channels = await ensure_bot_admin_category(interaction.guild)
-        except Exception:
+
+        channels = await self._get_admin_channels(interaction.guild)
+        if channels is None:
             return
+
         log_channel = channels["log"]
-        log_embed = build_simple_embed(
-            "Command Error",
-            f"Error: {error}",
-        )
-        await log_channel.send(embed=log_embed)
+        log_embed = build_simple_embed("Command Error", f"Error: {error}")
+        try:
+            await log_channel.send(embed=log_embed)
+        except discord.HTTPException:
+            pass
 
     # ── /backup ──────────────────────────────────────────────────────
 
@@ -103,9 +130,8 @@ class AuditCog(commands.Cog):
             )
             return
 
-        try:
-            _, channels = await ensure_bot_admin_category(interaction.guild)
-        except Exception:
+        channels = await self._get_admin_channels(interaction.guild)
+        if channels is None:
             await interaction.response.send_message(
                 embed=build_simple_embed("Error", "Could not create BOT category."),
                 ephemeral=True,

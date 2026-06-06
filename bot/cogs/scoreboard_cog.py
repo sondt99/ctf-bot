@@ -24,7 +24,7 @@ class ScoreboardCog(commands.Cog):
         self.repo = repo
         self._check_lock = asyncio.Lock()
         self.scoreboard_loop.start()
-        self.bot.loop.create_task(self._run_initial_check())
+        asyncio.create_task(self._run_initial_check())
 
     def cog_unload(self) -> None:
         self.scoreboard_loop.cancel()

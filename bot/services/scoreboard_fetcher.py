@@ -97,25 +97,40 @@ def _rctf_base_url(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/"
 
 
+def _scoreboard_auth_values(auth_token: str | None) -> list[str | None]:
+    if not auth_token or not auth_token.strip():
+        return [None]
+    token = auth_token.strip()
+    lower = token.lower()
+    if lower.startswith("token ") or lower.startswith("bearer "):
+        return [token]
+    return [f"Token {token}", f"Bearer {token}"]
+
+
 async def fetch_ctfd_scoreboard(base_url: str, auth_token: str | None = None) -> list[dict]:
     base = base_url.rstrip("/") + "/"
-    headers = {"User-Agent": "ctf-bot/1.0"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        for path in CTFD_CANDIDATES:
-            url = urljoin(base, path)
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                    ct = (resp.headers.get("content-type") or "").lower()
-                    if "json" not in ct:
-                        continue
-                    payload = await resp.json()
-            except Exception:
-                continue
-            if isinstance(payload, dict) and _looks_like_ctfd_scoreboard(payload):
-                return _normalize_entries(payload["data"])
+    for auth_value in _scoreboard_auth_values(auth_token):
+        headers: dict[str, str] = {"User-Agent": "ctf-bot/1.0"}
+        if auth_value:
+            headers["Authorization"] = auth_value
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            for path in CTFD_CANDIDATES:
+                url = urljoin(base, path)
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                        ct = (resp.headers.get("content-type") or "").lower()
+                        if "json" not in ct:
+                            continue
+                        if resp.status in {401, 403}:
+                            break  # Wrong auth scheme, try next
+                        payload = await resp.json()
+                except Exception:
+                    continue
+                if isinstance(payload, dict) and _looks_like_ctfd_scoreboard(payload):
+                    return _normalize_entries(payload["data"])
+
     raise RuntimeError("CTFd scoreboard endpoint not found or invalid.")
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
 import discord
@@ -862,6 +863,7 @@ class ChallengeCog(commands.Cog):
                 continue
 
             created.append(f"{name} ({topic}) -> {thread.mention}")
+            await asyncio.sleep(0.5)
             challenge = Challenge(
                 id=0,
                 guild_id=interaction.guild.id,
