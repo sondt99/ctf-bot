@@ -1232,6 +1232,153 @@ class ChallengeCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    # ── /ping ─────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="ping",
+        description="Ping all @ctf members in every open challenge thread for this event",
+    )
+    @app_commands.describe(
+        message="Optional message to include with the ping",
+        event_id="CTFtime event ID (required if multiple CTFs)",
+    )
+    async def ping(
+        self,
+        interaction: discord.Interaction,
+        message: str | None = None,
+        event_id: int | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+                ephemeral=True,
+            )
+            return
+
+        is_admin = interaction.user.guild_permissions.administrator  # type: ignore[union-attr]
+        has_ctf_role = discord.utils.get(interaction.user.roles, name="ctf") is not None  # type: ignore[union-attr]
+        if not is_admin and not has_ctf_role:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No permission",
+                    "Only admins or @ctf role members can use this command.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Resolve event from parameter, current channel category, or sole event
+        events = await self.repo.list_ctf_events(interaction.guild.id)
+        if not events:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No active CTF", "No CTF events joined in this server."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if event_id is not None:
+            event = next((e for e in events if e.ctftime_event_id == event_id), None)
+            if event is None:
+                await interaction.response.send_message(
+                    embed=build_simple_embed(
+                        "Event not found", f"Event ID {event_id} not found in this server."
+                    ),
+                    ephemeral=True,
+                )
+                return
+        else:
+            channel = interaction.channel
+            category_id: int | None = None
+            if isinstance(channel, discord.TextChannel):
+                category_id = channel.category_id
+            elif isinstance(channel, discord.Thread) and isinstance(
+                channel.parent, discord.TextChannel
+            ):
+                category_id = channel.parent.category_id
+
+            matched = (
+                next((e for e in events if e.category_id == category_id), None)
+                if category_id is not None
+                else None
+            )
+            if matched:
+                event = matched
+            elif len(events) == 1:
+                event = events[0]
+            else:
+                await interaction.response.send_message(
+                    embed=build_simple_embed(
+                        "Need event ID",
+                        "Multiple CTF events. Please provide event_id.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+        # Collect @ctf role members
+        ctf_role = discord.utils.get(interaction.guild.roles, name="ctf")
+        if ctf_role is None or not ctf_role.members:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No @ctf members",
+                    "No members with the @ctf role were found.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Build ping content — fall back to role mention if individual mentions overflow
+        individual = " ".join(m.mention for m in ctf_role.members)
+        ping_prefix = individual if len(individual) <= 1800 else ctf_role.mention
+        ping_content = f"{ping_prefix}\n{message}" if message else ping_prefix
+
+        # Find all open challenge threads for the event
+        challenges = await self.repo.list_challenges(
+            interaction.guild.id, event.ctftime_event_id
+        )
+        open_challenges = [c for c in challenges if c.status == "open"]
+
+        if not open_challenges:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No open challenges",
+                    "All challenges are solved or no challenges have been created yet.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        pinged = 0
+        failed = 0
+        for challenge in open_challenges:
+            thread = await self._get_thread(challenge.thread_id)
+            if thread is None:
+                failed += 1
+                continue
+            try:
+                await thread.send(ping_content)
+                pinged += 1
+                await asyncio.sleep(0.3)
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+
+        member_count = len(ctf_role.members)
+        summary_lines = [
+            f"Pinged **{member_count}** @ctf member{'s' if member_count != 1 else ''}",
+            f"in **{pinged}/{len(open_challenges)}** open challenge threads.",
+        ]
+        if failed:
+            summary_lines.append(f"Could not reach **{failed}** thread(s).")
+
+        await interaction.followup.send(
+            embed=build_simple_embed("Ping sent", " ".join(summary_lines)),
+            ephemeral=True,
+        )
+
 
 async def setup(bot: commands.Bot) -> None:
     repo: Repository = bot.repo  # type: ignore[attr-defined]
