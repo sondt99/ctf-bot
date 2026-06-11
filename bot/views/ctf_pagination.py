@@ -12,6 +12,7 @@ class CtfPaginationView(discord.ui.View):
         author_id: int,
         page_size: int = 3,
         timeout: int = 180,
+        title: str = "Upcoming CTFs",
     ):
         super().__init__(timeout=timeout)
         self.events = events
@@ -19,9 +20,10 @@ class CtfPaginationView(discord.ui.View):
         self.page_size = page_size
         self.page = 0
         self.message: discord.Message | None = None
+        self.title = title
 
     def build_page_payload(self) -> list[discord.Embed]:
-        embed = build_events_page_embed(self.events, self.page, self.page_size)
+        embed = build_events_page_embed(self.events, self.page, self.page_size, self.title)
         return [embed]
 
     async def _update(self, interaction: discord.Interaction) -> None:
@@ -41,13 +43,13 @@ class CtfPaginationView(discord.ui.View):
         return True
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
-    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def previous(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if self.page > 0:
             self.page -= 1
         await self._update(interaction)
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def next(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         max_page = max(0, (len(self.events) - 1) // self.page_size)
         if self.page < max_page:
             self.page += 1

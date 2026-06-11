@@ -4,8 +4,6 @@ from __future__ import annotations
 import os
 from datetime import timedelta, timezone
 
-import pytest
-
 # Ensure TIMEZONE env is set before importing embeds
 os.environ.setdefault("TIMEZONE", "UTC+7")
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
@@ -37,10 +35,30 @@ def test_parse_invalid_falls_back_to_utc(caplog):
     import logging
 
     with caplog.at_level(logging.WARNING, logger="bot.utils.embeds"):
-        tz = _parse_timezone_offset("America/New_York")
+        tz = _parse_timezone_offset("Not/A/RealZone_XYZ")
 
     assert tz == timezone.utc
     assert "Unrecognized TIMEZONE" in caplog.text
+
+
+def test_parse_iana_timezone():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from bot.utils.embeds import _parse_timezone_offset
+
+    tz = _parse_timezone_offset("Asia/Ho_Chi_Minh")
+    assert isinstance(tz, ZoneInfo)
+    # UTC+7 has no DST: offset is always +7h
+    dt = datetime(2026, 1, 1, tzinfo=tz)
+    assert dt.utcoffset() == timedelta(hours=7)
+
+
+def test_parse_iana_utc_alias():
+    from zoneinfo import ZoneInfo
+    from bot.utils.embeds import _parse_timezone_offset
+
+    tz = _parse_timezone_offset("UTC")
+    assert isinstance(tz, ZoneInfo)
 
 
 def test_build_simple_embed():
