@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import csv
 import hmac
+import io
+import json
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -443,6 +447,88 @@ class CtfCog(commands.Cog):
             color=discord.Color.gold(),
         )
         await interaction.response.send_message(embed=embed)
+
+    @ctf.command(name="export", description="Export challenge data for this CTF as JSON or CSV")
+    @app_commands.describe(
+        event_id="CTFtime event ID (required if multiple)",
+        format="Export format: json or csv",
+    )
+    @app_commands.choices(format=[
+        app_commands.Choice(name="JSON", value="json"),
+        app_commands.Choice(name="CSV", value="csv"),
+    ])
+    async def export(
+        self,
+        interaction: discord.Interaction,
+        format: str = "json",
+        event_id: int | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+            )
+            return
+
+        event = await self._resolve_event(interaction, event_id)
+        if event is None:
+            return
+
+        challenges = await self.repo.list_challenges(
+            interaction.guild.id, event.ctftime_event_id
+        )
+
+        exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        if format == "json":
+            payload = {
+                "event_id": event.ctftime_event_id,
+                "event_title": event.event_title,
+                "exported_at": exported_at,
+                "challenges": [
+                    {
+                        "name": c.challenge_name,
+                        "category": c.category,
+                        "status": c.status,
+                        "solved_by": c.solved_by,
+                        "solved_at": c.solved_at,
+                        "thread_id": c.thread_id,
+                    }
+                    for c in challenges
+                ],
+            }
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            filename = f"challenges_{event.ctftime_event_id}.json"
+            file_bytes = content.encode("utf-8")
+        else:
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(
+                ["challenge_name", "category", "status", "solved_by", "solved_at", "thread_id"]
+            )
+            for c in challenges:
+                solved_by_str = ";".join(str(uid) for uid in c.solved_by)
+                writer.writerow(
+                    [
+                        c.challenge_name,
+                        c.category,
+                        c.status,
+                        solved_by_str,
+                        c.solved_at or "",
+                        c.thread_id,
+                    ]
+                )
+            content = buf.getvalue()
+            filename = f"challenges_{event.ctftime_event_id}.csv"
+            file_bytes = content.encode("utf-8")
+
+        discord_file = discord.File(
+            fp=io.BytesIO(file_bytes),
+            filename=filename,
+        )
+        await interaction.response.send_message(
+            content=f"Export for **{event.event_title}** ({len(challenges)} challenges)",
+            file=discord_file,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
