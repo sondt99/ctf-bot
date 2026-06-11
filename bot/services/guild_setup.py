@@ -40,14 +40,9 @@ async def create_ctf_category_and_channels(
 
     channels: dict[str, int] = {}
     for channel_name in CHANNELS:
+        ow: _Overwrites = {}
         if channel_name == "Account":
-            ow: _Overwrites = {
-                guild.default_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=False
-                )
-            }
-        else:
-            ow = {}
+            ow = {guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False)}
 
         channel = await category.create_text_channel(
             name=channel_name.lower(),
@@ -89,9 +84,8 @@ async def delete_ctf_category_and_channels(
 async def ensure_bot_admin_category(
     guild: discord.Guild,
 ) -> tuple[discord.CategoryChannel, dict[str, discord.TextChannel]]:
-    ow: dict[discord.Role | discord.Member | discord.Object, discord.PermissionOverwrite] = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-    }
+    ow: dict[discord.Role | discord.Member | discord.Object, discord.PermissionOverwrite] = {}
+    ow[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
     if guild.me is not None:
         ow[guild.me] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, manage_channels=True

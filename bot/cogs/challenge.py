@@ -132,13 +132,13 @@ class ChallengesView(discord.ui.View):
         return True
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
-    async def previous(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+    async def previous(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if self.page > 0:
             self.page -= 1
         await self._update(interaction)
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
-    async def next(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+    async def next(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if self.page < self.total_pages - 1:
             self.page += 1
         await self._update(interaction)

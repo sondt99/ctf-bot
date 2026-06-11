@@ -1,9 +1,6 @@
 """Tests for Feature 1 (CTFd auto-poll detection) and Feature 2 (/ctf export)."""
 from __future__ import annotations
 
-import csv
-import io
-import json
 import os
 import tempfile
 
@@ -158,8 +155,6 @@ async def test_export_json_format(repo):
     """JSON export contains correct fields for all challenges."""
     import json
     from datetime import datetime, timezone
-
-    from bot.cogs.ctf import CtfCog
 
     # Seed DB
     await repo.upsert_ctf_event(
