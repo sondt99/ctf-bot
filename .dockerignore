@@ -1,0 +1,15 @@
+.git
+.env
+*.db
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+*.egg-info
+dist/
+build/
+.venv
+venv/
+scoreboard/ctfd_scoreboard.json
+scoreboard/scores_capture.json
