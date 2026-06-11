@@ -89,3 +89,27 @@ async def fetch_event(event_id: int) -> dict:
         if not isinstance(result, dict):
             raise RuntimeError("CTFtime returned unexpected JSON shape for event.")
         return result
+
+
+def _unix_from_iso(value: str) -> int:
+    """Parse ISO datetime string to Unix timestamp, return 0 on error."""
+    try:
+        from datetime import datetime, timezone as _tz
+        dt = datetime.fromisoformat(value)
+        return int(dt.astimezone(_tz.utc).timestamp())
+    except Exception:
+        return 0
+
+
+async def fetch_running_events(limit: int = 20) -> list[dict]:
+    """Return CTFs that are currently running (start <= now <= finish)."""
+    now = _unix_now()
+    # Fetch events that started within the past 14 days
+    window_start = now - 14 * 86400
+    url = f"{BASE_URL}/events/?limit={limit}&start={window_start}&finish={now}"
+    async with aiohttp.ClientSession() as session:
+        result = await _fetch_json(session, url)
+        if not isinstance(result, list):
+            raise RuntimeError("CTFtime returned unexpected JSON shape.")
+        # Filter to events where finish >= now (currently running)
+        return [e for e in result if _unix_from_iso(e.get("finish", "")) >= now]

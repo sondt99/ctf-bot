@@ -26,6 +26,8 @@ CTF_REMOVE_PASSWORD = _get_env("CTF_REMOVE_PASSWORD")
 SCOREBOARD_TEAM_NAME = _get_env("SCOREBOARD_TEAM_NAME")
 FERNET_KEY = _get_env("FERNET_KEY")
 
+AUTO_BACKUP_INTERVAL_HOURS = int(_get_env("AUTO_BACKUP_INTERVAL_HOURS") or "0")
+
 if FERNET_KEY is None:
     _log.warning(
         "FERNET_KEY not set — auth tokens will be stored in plaintext. "

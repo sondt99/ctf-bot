@@ -41,6 +41,95 @@ _CATEGORY_PAGE_SIZE = 4
 _CATEGORY_MAPPING_TIMEOUT_SECONDS = 300
 _UNCATEGORIZED = "Uncategorized"
 
+_CHALLENGES_PAGE_SIZE = 10
+
+
+class ChallengesView(discord.ui.View):
+    def __init__(
+        self,
+        challenges: list,  # list[Challenge]
+        event_title: str,
+        author_id: int,
+        timeout: int = 180,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.challenges = challenges
+        self.event_title = event_title
+        self.author_id = author_id
+        self.page = 0
+        self.message: discord.Message | None = None
+        self._update_buttons()
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, (len(self.challenges) + _CHALLENGES_PAGE_SIZE - 1) // _CHALLENGES_PAGE_SIZE)
+
+    def _update_buttons(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                if item.label == "Previous":
+                    item.disabled = self.page == 0
+                elif item.label == "Next":
+                    item.disabled = self.page >= self.total_pages - 1
+
+    def build_embed(self) -> discord.Embed:
+        start = self.page * _CHALLENGES_PAGE_SIZE
+        page_challenges = self.challenges[start : start + _CHALLENGES_PAGE_SIZE]
+        total = len(self.challenges)
+        solved = sum(1 for c in self.challenges if c.status == "done")
+        lines = []
+        for c in page_challenges:
+            status_icon = "✅" if c.status == "done" else "🔓"
+            thread_link = f"<#{c.thread_id}>"
+            lines.append(f"{status_icon} **{c.challenge_name}** [{c.category}] {thread_link}")
+        embed = discord.Embed(
+            title=f"Challenges — {self.event_title}",
+            description="\n".join(lines) or "No challenges.",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(
+            text=f"Page {self.page + 1}/{self.total_pages} | {solved}/{total} solved"
+        )
+        return embed
+
+    async def _update(self, interaction: discord.Interaction) -> None:
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="Not allowed",
+                    description="Only the command author can use these buttons.",
+                ),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if self.page > 0:
+            self.page -= 1
+        await self._update(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
+    async def next(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if self.page < self.total_pages - 1:
+            self.page += 1
+        await self._update(interaction)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.NotFound:
+                pass
+
 
 def _truncate_text(value: str, limit: int) -> str:
     value = value.strip()
@@ -714,7 +803,7 @@ class ChallengeCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only", "Only admins can fetch challenges in bulk."
@@ -967,8 +1056,9 @@ class ChallengeCog(commands.Cog):
             )
             return
 
-        is_admin = interaction.user.guild_permissions.administrator
-        has_ctf_role = discord.utils.get(interaction.user.roles, name="ctf") is not None
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        is_admin = member is not None and member.guild_permissions.administrator
+        has_ctf_role = member is not None and discord.utils.get(member.roles, name="ctf") is not None
         if not is_admin and not has_ctf_role:
             await interaction.response.send_message(
                 embed=build_simple_embed(
@@ -1033,6 +1123,12 @@ class ChallengeCog(commands.Cog):
             )
             challenge = await self.repo.get_challenge_by_thread(thread.id)
 
+        if challenge is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Error", "Challenge not found in database."),
+                ephemeral=True,
+            )
+            return
         if challenge.status == "done":
             await interaction.response.send_message(
                 embed=build_simple_embed(
@@ -1088,7 +1184,7 @@ class ChallengeCog(commands.Cog):
             )
             return
 
-        if not interaction.user.guild_permissions.administrator:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only", "Only admins can use this command."
@@ -1219,35 +1315,13 @@ class ChallengeCog(commands.Cog):
             )
             return
 
-        # Group by category
-        by_cat: dict[str, list] = {}
-        for ch in challs:
-            by_cat.setdefault(ch.category, []).append(ch)
-
-        embed = discord.Embed(
-            title=f"Challenges — {event.event_title}",
-            color=discord.Color.gold(),
+        view = ChallengesView(
+            challenges=challs,
+            event_title=event.event_title,
+            author_id=interaction.user.id,
         )
-
-        total = len(challs)
-        solved = sum(1 for c in challs if c.status == "done")
-        embed.description = f"**Total:** {total} | **Solved:** {solved} | **Open:** {total - solved}"
-
-        for cat in sorted(by_cat.keys()):
-            lines = []
-            for ch in by_cat[cat]:
-                status_icon = "\u2705" if ch.status == "done" else "\u23f3"
-                solver_text = ""
-                if ch.status == "done" and ch.solved_by:
-                    solver_text = " — " + ", ".join(
-                        f"<@{uid}>" for uid in ch.solved_by
-                    )
-                lines.append(f"{status_icon} <#{ch.thread_id}>{solver_text}")
-            embed.add_field(
-                name=cat, value="\n".join(lines), inline=False
-            )
-
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        view.message = await interaction.original_response()
 
     # ── /ping ─────────────────────────────────────────────────────────
 

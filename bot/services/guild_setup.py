@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Mapping
 
 import discord
 
@@ -21,6 +22,8 @@ BOT_CATEGORY_NAME = "BOT"
 BOT_LOG_CHANNEL = "log"
 BOT_BACKUP_CHANNEL = "backup"
 
+_Overwrites = Mapping[discord.Role | discord.Member | discord.Object, discord.PermissionOverwrite]
+
 
 def _sanitize_category_name(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip()
@@ -38,17 +41,17 @@ async def create_ctf_category_and_channels(
     channels: dict[str, int] = {}
     for channel_name in CHANNELS:
         if channel_name == "Account":
-            overwrites = {
+            ow: _Overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
                     view_channel=True, send_messages=False
                 )
             }
         else:
-            overwrites = {}
+            ow = {}
 
         channel = await category.create_text_channel(
             name=channel_name.lower(),
-            overwrites=overwrites,
+            overwrites=ow,
         )
         channels[channel_name] = channel.id
 
@@ -62,7 +65,7 @@ async def hide_ctf_category_and_channels(
     if not isinstance(category, discord.CategoryChannel):
         raise ValueError("Category not found.")
 
-    overwrites = {
+    overwrites: _Overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False)
     }
     await category.edit(overwrites=overwrites)
@@ -86,17 +89,17 @@ async def delete_ctf_category_and_channels(
 async def ensure_bot_admin_category(
     guild: discord.Guild,
 ) -> tuple[discord.CategoryChannel, dict[str, discord.TextChannel]]:
-    overwrites = {
+    ow: dict[discord.Role | discord.Member | discord.Object, discord.PermissionOverwrite] = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
     }
     if guild.me is not None:
-        overwrites[guild.me] = discord.PermissionOverwrite(
+        ow[guild.me] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, manage_channels=True
         )
 
     category = discord.utils.get(guild.categories, name=BOT_CATEGORY_NAME)
     if category is None:
-        category = await guild.create_category(name=BOT_CATEGORY_NAME, overwrites=overwrites)
+        category = await guild.create_category(name=BOT_CATEGORY_NAME, overwrites=ow)
 
     log_channel = discord.utils.get(category.text_channels, name=BOT_LOG_CHANNEL)
     if log_channel is None:
@@ -107,3 +110,17 @@ async def ensure_bot_admin_category(
         backup_channel = await category.create_text_channel(name=BOT_BACKUP_CHANNEL)
 
     return category, {"log": log_channel, "backup": backup_channel}
+
+
+CTF_ROLE_NAME = "ctf"
+
+
+async def ensure_ctf_role(guild: discord.Guild) -> discord.Role:
+    """Return the @ctf role, creating it if it doesn't exist."""
+    role = discord.utils.get(guild.roles, name=CTF_ROLE_NAME)
+    if role is None:
+        role = await guild.create_role(
+            name=CTF_ROLE_NAME,
+            reason="Auto-created by ctf-bot for /done access",
+        )
+    return role

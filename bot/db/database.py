@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 import aiosqlite
 
@@ -89,12 +90,12 @@ async def _table_exists(db: aiosqlite.Connection, name: str) -> bool:
     return row is not None
 
 
-async def _table_info(db: aiosqlite.Connection, name: str) -> list[tuple]:
+async def _table_info(db: aiosqlite.Connection, name: str) -> list[tuple[Any, ...]]:
     _validate_identifier(name)
     cursor = await db.execute(f"PRAGMA table_info({name})")
     rows = await cursor.fetchall()
     await cursor.close()
-    return rows
+    return [tuple(row) for row in rows]
 
 
 def _is_legacy_single_pk(rows: list[tuple]) -> bool:
@@ -217,6 +218,8 @@ async def _migrate_scoreboard_state(db: aiosqlite.Connection) -> None:
 
 async def init_db(db_path: str) -> None:
     async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
         await _migrate_ctf_events(db)
         await _migrate_scoreboard_config(db)
         await _migrate_scoreboard_state(db)

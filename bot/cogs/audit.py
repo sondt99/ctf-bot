@@ -5,9 +5,9 @@ from pathlib import Path
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from bot.config import DATABASE_PATH
+from bot.config import AUTO_BACKUP_INTERVAL_HOURS, DATABASE_PATH
 from bot.services.guild_setup import ensure_bot_admin_category
 from bot.utils.embeds import build_simple_embed
 
@@ -17,6 +17,32 @@ class AuditCog(commands.Cog):
         self.bot = bot
         self.ready_once = False
         self._channel_cache: dict[int, dict[str, discord.TextChannel]] = {}
+        if AUTO_BACKUP_INTERVAL_HOURS > 0:
+            self.auto_backup_loop.change_interval(hours=AUTO_BACKUP_INTERVAL_HOURS)
+            self.auto_backup_loop.start()
+
+    def cog_unload(self) -> None:
+        self.auto_backup_loop.cancel()
+
+    @tasks.loop(hours=24)
+    async def auto_backup_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            channels = await self._get_admin_channels(guild)
+            if channels is None:
+                continue
+            backup_channel = channels["backup"]
+            db_path = Path(DATABASE_PATH or "ctf_bot.db")
+            if not db_path.exists():
+                continue
+            try:
+                with open(db_path, "rb") as f:
+                    await backup_channel.send(
+                        content="Auto backup",
+                        file=discord.File(f, filename="ctf_bot.db"),
+                    )
+            except Exception:
+                pass
 
     async def _get_admin_channels(
         self, guild: discord.Guild
