@@ -1,15 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
+from bot.config import CTFD_POLL_INTERVAL_MINUTES
 from bot.db.repository import Challenge, CtfEvent, Repository
 from bot.services.ctfd import CtfdChallenge, fetch_ctfd_challenges
 from bot.utils.embeds import build_simple_embed
+
+_log = logging.getLogger(__name__)
+
+
+def filter_new_ctfd_challenges(
+    fetched: list[CtfdChallenge],
+    tracked: list[Challenge],
+) -> list[CtfdChallenge]:
+    """Return only the fetched challenges that are not yet tracked.
+
+    A challenge is considered tracked when a Challenge record exists with
+    a matching ctfd_challenge_id.  This function is intentionally pure
+    (no I/O) so it can be unit-tested directly.
+    """
+    tracked_ids: set[int] = {
+        c.ctfd_challenge_id
+        for c in tracked
+        if c.ctfd_challenge_id is not None
+    }
+    return [ch for ch in fetched if ch.id not in tracked_ids]
 
 
 # Topic channels where /challenge is allowed
@@ -373,6 +396,173 @@ class ChallengeCog(commands.Cog):
     def __init__(self, bot: commands.Bot, repo: Repository) -> None:
         self.bot = bot
         self.repo = repo
+        self._poll_lock = asyncio.Lock()
+        if CTFD_POLL_INTERVAL_MINUTES > 0:
+            self.ctfd_poll_loop.change_interval(minutes=CTFD_POLL_INTERVAL_MINUTES)
+            self.ctfd_poll_loop.start()
+
+    async def cog_unload(self) -> None:
+        self.ctfd_poll_loop.cancel()
+
+    # ── CTFd auto-poll ────────────────────────────────────────────────
+
+    @tasks.loop(minutes=1)  # interval is overridden at startup when enabled
+    async def ctfd_poll_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        await self._poll_ctfd_challenges()
+
+    async def _poll_ctfd_challenges(self) -> None:
+        """Fetch CTFd challenges for all CTFd scoreboard configs and create threads for new ones."""
+        async with self._poll_lock:
+            try:
+                configs = await self.repo.list_scoreboard_configs()
+            except Exception as exc:
+                _log.error("CTFd poll: failed to list scoreboard configs: %s", exc)
+                return
+
+            ctfd_configs = [c for c in configs if c.type.lower() == "ctfd"]
+            if not ctfd_configs:
+                return
+
+            sem = asyncio.Semaphore(3)
+
+            for config in ctfd_configs:
+                async with sem:
+                    await self._poll_single_config(config)
+
+    async def _poll_single_config(self, config) -> None:  # config: ScoreboardConfig
+        guild = self.bot.get_guild(config.guild_id)
+        if guild is None:
+            return
+
+        # Check the event exists and is not finished
+        try:
+            event = await self.repo.get_ctf_event(config.guild_id, config.ctftime_event_id)
+        except Exception as exc:
+            _log.error("CTFd poll: DB error getting event %s/%s: %s",
+                       config.guild_id, config.ctftime_event_id, exc)
+            return
+
+        if event is None:
+            return
+
+        if event.finish_time:
+            try:
+                finish = datetime.fromisoformat(event.finish_time)
+                if finish.tzinfo is None:
+                    finish = finish.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > finish:
+                    return
+            except ValueError:
+                pass
+
+        # Fetch challenges from CTFd
+        try:
+            fetched = await fetch_ctfd_challenges(config.url, config.auth_token)
+        except Exception as exc:
+            _log.warning("CTFd poll: failed to fetch challenges from %s: %s", config.url, exc)
+            await self._log_to_guild(guild, f"CTFd poll error for event **{event.event_title}**: {exc}")
+            return
+
+        # Get existing tracked challenges
+        try:
+            tracked = await self.repo.list_challenges(config.guild_id, config.ctftime_event_id)
+        except Exception as exc:
+            _log.error("CTFd poll: DB error listing challenges: %s", exc)
+            return
+
+        new_challenges = filter_new_ctfd_challenges(fetched, tracked)
+        if not new_challenges:
+            return
+
+        _log.info(
+            "CTFd poll: %d new challenge(s) found for event %s in guild %s",
+            len(new_challenges), config.ctftime_event_id, config.guild_id,
+        )
+
+        created_names: list[str] = []
+        failed_names: list[str] = []
+
+        for ctfd_challenge in new_challenges:
+            category = _category_label(ctfd_challenge.category)
+            topic = _default_topic_for_category(category)
+            channel = self._get_topic_channel(guild, event, topic)
+            name = self._sanitize_challenge_name(ctfd_challenge.name)
+            if not name:
+                failed_names.append(f"CTFd ID {ctfd_challenge.id}: empty name")
+                continue
+            if channel is None:
+                failed_names.append(f"{name} ({topic}): missing topic channel")
+                continue
+
+            try:
+                embed = self._build_ctfd_challenge_embed(event, ctfd_challenge, topic)
+                await self._create_tracked_challenge_thread(
+                    guild=guild,
+                    event=event,
+                    channel=channel,
+                    name=name,
+                    topic=topic,
+                    embed=embed,
+                    ctfd_challenge=ctfd_challenge,
+                )
+                created_names.append(f"{name} ({topic})")
+                await asyncio.sleep(0.5)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                failed_names.append(f"{name} ({topic}): {exc}")
+
+        if created_names:
+            summary = "\n".join(f"• {n}" for n in created_names[:15])
+            if len(created_names) > 15:
+                summary += f"\n... and {len(created_names) - 15} more"
+            await self._notify_new_challenges(guild, event, summary)
+
+        if failed_names:
+            _log.warning(
+                "CTFd poll: %d failure(s) for event %s: %s",
+                len(failed_names), config.ctftime_event_id, "; ".join(failed_names),
+            )
+
+    async def _notify_new_challenges(self, guild: discord.Guild, event: CtfEvent, summary: str) -> None:
+        """Post a notification in the general channel for this event."""
+        general_channel_id = event.channels.get("General") or event.channels.get("general")
+        channel: discord.TextChannel | None = None
+        if general_channel_id:
+            ch = guild.get_channel(int(general_channel_id))
+            if isinstance(ch, discord.TextChannel):
+                channel = ch
+
+        if channel is None:
+            # Fall back to first text channel in the category
+            cat = guild.get_channel(event.category_id)
+            if isinstance(cat, discord.CategoryChannel) and cat.text_channels:
+                channel = cat.text_channels[0]
+
+        if channel is None:
+            return
+
+        embed = discord.Embed(
+            title=f"New challenges available — {event.event_title}",
+            description=summary,
+            color=discord.Color.green(),
+        )
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            _log.warning("CTFd poll: could not send notification to #%s: %s", channel.name, exc)
+
+    async def _log_to_guild(self, guild: discord.Guild, message: str) -> None:
+        """Send an error message to the BOT/log channel if available."""
+        try:
+            from bot.services.guild_setup import ensure_bot_admin_category
+            _, channels = await ensure_bot_admin_category(guild)
+            log_channel = channels.get("log")
+            if log_channel is not None:
+                await log_channel.send(
+                    embed=build_simple_embed("CTFd Poll Error", message[:1800])
+                )
+        except Exception:
+            pass
 
     # ── helpers ───────────────────────────────────────────────────────
 
