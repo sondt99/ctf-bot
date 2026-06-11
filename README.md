@@ -2,6 +2,13 @@
 
 A Discord bot for organizing Capture The Flag competitions. It integrates with CTFtime to fetch events, creates per-event categories and channels, tracks challenges with threads, and polls live scoreboards for CTFd and rCTF platforms.
 
+## Documentation
+
+- [Architecture](docs/architecture.md) — component overview and data flow
+- [Database](docs/database.md) — schema, tables, migrations, repository API
+- [Development](docs/development.md) — local setup, testing, type checking
+- [Deployment](docs/deployment.md) — Docker, systemd, environment reference
+
 ## Features
 
 - **CTFtime integration** — browse and join upcoming CTF events with pagination
