@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 import aiosqlite
 
@@ -527,7 +528,8 @@ class Repository:
 
     # ── Challenge tracking ───────────────────────────────────────────
 
-    def _row_to_challenge(self, row: tuple) -> Challenge:
+    def _row_to_challenge(self, row: Any) -> Challenge:
+        row = list(row)  # convert aiosqlite.Row → list so Pyright indexing is trivially safe
         solved_by_raw = row[8]
         solved_by = json.loads(solved_by_raw) if solved_by_raw else []
         ctfd_files_raw = row[13] if len(row) > 13 else None
@@ -570,7 +572,7 @@ class Repository:
         ctfd_description: str | None = None,
         ctfd_files: list[str] | None = None,
         ctfd_message_id: int | None = None,
-    ) -> int:
+    ) -> int | None:
         created_at = _utc_now_iso()
         ctfd_files_json = (
             json.dumps(ctfd_files, ensure_ascii=False) if ctfd_files is not None else None

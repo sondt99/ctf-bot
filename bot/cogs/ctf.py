@@ -8,10 +8,11 @@ from discord.ext import commands
 
 from bot.config import CTF_REMOVE_PASSWORD
 from bot.db.repository import Repository
-from bot.services.ctftime import fetch_event, fetch_upcoming_events
+from bot.services.ctftime import fetch_event, fetch_running_events, fetch_upcoming_events
 from bot.services.guild_setup import (
     create_ctf_category_and_channels,
     delete_ctf_category_and_channels,
+    ensure_ctf_role,
     hide_ctf_category_and_channels,
 )
 from bot.utils.embeds import build_simple_embed
@@ -60,7 +61,7 @@ class CtfCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only", "Only admins can create CTF channels."
@@ -124,7 +125,16 @@ class CtfCog(commands.Cog):
             finish_time=event.get("finish"),
         )
 
-        status = f"Created category `{category.name}` with {len(channels)} channels."
+        # Ensure @ctf role exists for /done access
+        try:
+            ctf_role = await ensure_ctf_role(interaction.guild)
+            role_note = f"\nRole `@{ctf_role.name}` is ready for `/done` access."
+        except discord.Forbidden:
+            role_note = "\nCould not create `@ctf` role — missing Manage Roles permission."
+        except Exception:
+            role_note = ""
+
+        status = f"Created category `{category.name}` with {len(channels)} channels.{role_note}"
 
         await interaction.followup.send(
             embed=build_simple_embed(
@@ -133,9 +143,36 @@ class CtfCog(commands.Cog):
             )
         )
 
+    @ctf.command(name="running", description="List currently running CTF events from CTFtime")
+    @app_commands.describe(limit="Number of events to show (max 20)")
+    async def running(self, interaction: discord.Interaction, limit: int = 10) -> None:
+        limit = max(3, min(limit, 20))
+        await interaction.response.defer()
+        try:
+            events = await fetch_running_events(limit=limit)
+        except Exception:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "CTFtime error",
+                    "Unable to fetch running events. Try again later.",
+                )
+            )
+            return
+        if not events:
+            await interaction.followup.send(
+                embed=build_simple_embed("No running CTFs", "No CTFs are currently running.")
+            )
+            return
+        view = CtfPaginationView(events=events, author_id=interaction.user.id, page_size=3)
+        embeds = view.build_page_payload()
+        message = await interaction.followup.send(embeds=embeds, view=view)
+        view.message = message
+
     async def _resolve_event(
         self, interaction: discord.Interaction, event_id: int | None
     ):
+        if interaction.guild is None:
+            return None
         events = await self.repo.list_ctf_events(interaction.guild.id)
         if not events:
             await interaction.response.send_message(
@@ -195,7 +232,7 @@ class CtfCog(commands.Cog):
                 embed=build_simple_embed("Guild only", "Use this in a server."),
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only",
@@ -260,13 +297,12 @@ class CtfCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only",
                     "Only admins can use this command.",
-                )
-                ,
+                ),
                 ephemeral=True,
             )
             return
@@ -330,6 +366,83 @@ class CtfCog(commands.Cog):
             ),
             ephemeral=True,
         )
+
+
+    @ctf.command(name="progress", description="Show challenge progress for a CTF event")
+    @app_commands.describe(event_id="CTFtime event ID (required if multiple)")
+    async def progress(
+        self, interaction: discord.Interaction, event_id: int | None = None
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+            )
+            return
+        event = await self._resolve_event(interaction, event_id)
+        if event is None:
+            return
+
+        challenges = await self.repo.list_challenges(interaction.guild.id, event.ctftime_event_id)
+        if not challenges:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No challenges",
+                    "No challenges tracked yet. Use `/challenge` or `/challenge-fetch` to add them.",
+                )
+            )
+            return
+
+        total = len(challenges)
+        solved = sum(1 for c in challenges if c.status == "done")
+        open_count = total - solved
+        pct = int(solved / total * 100) if total > 0 else 0
+
+        # Per-category breakdown
+        from collections import defaultdict
+        cat_total: dict[str, int] = defaultdict(int)
+        cat_solved: dict[str, int] = defaultdict(int)
+        for c in challenges:
+            cat_total[c.category] += 1
+            if c.status == "done":
+                cat_solved[c.category] += 1
+
+        bar_width = 8
+        lines = []
+        for cat in sorted(cat_total):
+            t = cat_total[cat]
+            s = cat_solved[cat]
+            filled = int(s / t * bar_width) if t > 0 else 0
+            bar = "█" * filled + "░" * (bar_width - filled)
+            suffix = " ✓" if s == t else ""
+            lines.append(f"`{cat:<6}` {bar} {s}/{t}{suffix}")
+
+        # Last solve time
+        solved_times = [c.solved_at for c in challenges if c.solved_at]
+        last_solve = ""
+        if solved_times:
+            latest = max(solved_times)
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(latest).astimezone(timezone.utc)
+                ts = int(dt.timestamp())
+                last_solve = f"\nLast solve: <t:{ts}:R>"
+            except Exception:
+                pass
+
+        desc = (
+            f"**Total:** {total} challenges\n"
+            f"**Solved:** {solved} ({pct}%)\n"
+            f"**Open:** {open_count}\n\n"
+            + "\n".join(lines)
+            + last_solve
+        )
+
+        embed = discord.Embed(
+            title=f"CTF Progress — {event.event_title}",
+            description=desc,
+            color=discord.Color.gold(),
+        )
+        await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
