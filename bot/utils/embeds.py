@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 
@@ -11,18 +12,25 @@ from bot.config import TIMEZONE
 _log = logging.getLogger(__name__)
 
 
-def _parse_timezone_offset(value: str) -> timezone:
-    match = re.fullmatch(r"UTC([+-])(\d{1,2})", value.strip())
-    if not match:
-        _log.warning(
-            "Unrecognized TIMEZONE value %r — falling back to UTC. "
-            "Use format UTC+N or UTC-N (e.g., UTC+7).",
-            value,
-        )
-        return timezone.utc
-    sign = 1 if match.group(1) == "+" else -1
-    hours = int(match.group(2))
-    return timezone(sign * timedelta(hours=hours))
+def _parse_timezone_offset(value: str) -> tzinfo:
+    v = value.strip()
+    # Try IANA name first (e.g. Asia/Ho_Chi_Minh, Europe/Berlin)
+    try:
+        return ZoneInfo(v)
+    except (ZoneInfoNotFoundError, KeyError):
+        pass
+    # Fall back to UTC+N / UTC-N fixed-offset format
+    match = re.fullmatch(r"UTC([+-])(\d{1,2})", v)
+    if match:
+        sign = 1 if match.group(1) == "+" else -1
+        hours = int(match.group(2))
+        return timezone(sign * timedelta(hours=hours))
+    _log.warning(
+        "Unrecognized TIMEZONE value %r — falling back to UTC. "
+        "Accepted formats: IANA name (Asia/Ho_Chi_Minh) or UTC+N / UTC-N.",
+        value,
+    )
+    return timezone.utc
 
 
 def _format_time_range(event: dict) -> str:
@@ -81,7 +89,6 @@ def _format_event_block(event: dict) -> str:
         weight_text = f"{weight_value:.2f}"
     else:
         weight_text = str(weight_value)
-    title = event.get("title") or "CTF Event"
     lines = [
         f"Format: {event.get('format') or 'N/A'} | Rating Weight: {weight_text}",
         f"Time: {_format_time_range(event)}",
@@ -93,13 +100,13 @@ def _format_event_block(event: dict) -> str:
 
 
 def build_events_page_embed(
-    events: list[dict], page: int, page_size: int
+    events: list[dict], page: int, page_size: int, title: str = "Upcoming CTFs"
 ) -> discord.Embed:
     total_pages = max(1, (len(events) + page_size - 1) // page_size)
     start_index = page * page_size
     slice_events = events[start_index : start_index + page_size]
 
-    embed = discord.Embed(title="Upcoming CTFs", color=discord.Color.gold())
+    embed = discord.Embed(title=title, color=discord.Color.gold())
     for event in slice_events:
         embed.add_field(
             name=event.get("title") or "CTF Event",

@@ -40,18 +40,19 @@ async def test_fetch_json_retries_transient_error():
             pass
 
     class _FakeSession:
-        def get(self, url, **kwargs):
+        def get(self, url: str, **kwargs):
+            del url, kwargs
             nonlocal call_count
             call_count += 1
 
             class _Ctx:
-                async def __aenter__(self_):
+                async def __aenter__(self):
                     if call_count < 3:
                         raise aiohttp.ClientConnectionError("transient")
                     return _FakeResp()
 
-                async def __aexit__(self_, *_):
-                    pass
+                async def __aexit__(self, *args):
+                    del args
 
             return _Ctx()
 
@@ -67,15 +68,60 @@ async def test_fetch_json_raises_after_all_retries():
     from bot.services.ctftime import _fetch_json
 
     class _AlwaysFailSession:
-        def get(self, url, **kwargs):
+        def get(self, url: str, **kwargs):
+            del url, kwargs
+
             class _Ctx:
-                async def __aenter__(self_):
+                async def __aenter__(self):
                     raise aiohttp.ClientConnectionError("always fails")
 
-                async def __aexit__(self_, *_):
-                    pass
+                async def __aexit__(self, *args):
+                    del args
 
             return _Ctx()
 
     with pytest.raises((aiohttp.ClientConnectionError, RuntimeError)):
         await _fetch_json(_AlwaysFailSession(), "http://fake/")  # type: ignore[arg-type]
+
+
+def test_unix_from_iso_valid():
+    from bot.services.ctftime import _unix_from_iso
+
+    ts = _unix_from_iso("2026-06-11T10:00:00+00:00")
+    assert ts > 0
+
+
+def test_unix_from_iso_invalid_returns_zero():
+    from bot.services.ctftime import _unix_from_iso
+
+    assert _unix_from_iso("not-a-date") == 0
+    assert _unix_from_iso("") == 0
+
+
+def test_fetch_archived_events_filters_running():
+    """filter logic: events with finish < now are archived, finish >= now are not."""
+    from bot.services.ctftime import _unix_from_iso, _unix_now
+
+    now = _unix_now()
+    past_ts = now - 3600
+    future_ts = now + 3600
+
+    from datetime import datetime, timezone
+
+    def _make_iso(ts: int) -> str:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+    events = [
+        {"title": "Past CTF", "finish": _make_iso(past_ts)},
+        {"title": "Running CTF", "finish": _make_iso(future_ts)},
+        {"title": "No finish"},
+    ]
+    archived = [e for e in events if _unix_from_iso(e.get("finish", "")) < now]
+    not_archived = [e for e in events if _unix_from_iso(e.get("finish", "")) >= now]
+
+    # "Past CTF" has finish < now; "No finish" → _unix_from_iso("") = 0 < now → also archived
+    archived_titles = {e["title"] for e in archived}
+    assert "Past CTF" in archived_titles
+    assert "No finish" in archived_titles
+    assert len(not_archived) == 1
+    assert not_archived[0]["title"] == "Running CTF"

@@ -12,7 +12,7 @@ from discord.ext import commands
 
 from bot.config import CTF_REMOVE_PASSWORD
 from bot.db.repository import Repository
-from bot.services.ctftime import fetch_event, fetch_running_events, fetch_upcoming_events
+from bot.services.ctftime import fetch_archived_events, fetch_event, fetch_running_events, fetch_upcoming_events
 from bot.services.guild_setup import (
     create_ctf_category_and_channels,
     delete_ctf_category_and_channels,
@@ -168,6 +168,45 @@ class CtfCog(commands.Cog):
             )
             return
         view = CtfPaginationView(events=events, author_id=interaction.user.id, page_size=3)
+        embeds = view.build_page_payload()
+        message = await interaction.followup.send(embeds=embeds, view=view)
+        view.message = message
+
+    @ctf.command(name="archive", description="List recently ended CTF events from CTFtime")
+    @app_commands.describe(
+        limit="Number of events to show (max 20)",
+        days="How many days back to look (default 30)",
+    )
+    async def archive(
+        self, interaction: discord.Interaction, limit: int = 10, days: int = 30
+    ) -> None:
+        limit = max(3, min(limit, 20))
+        days = max(1, min(days, 90))
+        await interaction.response.defer()
+        try:
+            events = await fetch_archived_events(limit=limit, window_days=days)
+        except Exception:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "CTFtime error",
+                    "Unable to fetch archived events. Try again later.",
+                )
+            )
+            return
+        if not events:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "No archived CTFs",
+                    f"No CTFs ended in the past {days} days.",
+                )
+            )
+            return
+        view = CtfPaginationView(
+            events=events,
+            author_id=interaction.user.id,
+            page_size=3,
+            title=f"Archived CTFs (last {days}d)",
+        )
         embeds = view.build_page_payload()
         message = await interaction.followup.send(embeds=embeds, view=view)
         view.message = message

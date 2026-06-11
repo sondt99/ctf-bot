@@ -91,6 +91,18 @@ async def fetch_event(event_id: int) -> dict:
         return result
 
 
+async def fetch_archived_events(limit: int = 20, window_days: int = 30) -> list[dict]:
+    """Return CTF events that ended within the past window_days."""
+    now = _unix_now()
+    window_start = now - window_days * 86400
+    url = f"{BASE_URL}/events/?limit={limit}&start={window_start}&finish={now}"
+    async with aiohttp.ClientSession() as session:
+        result = await _fetch_json(session, url)
+        if not isinstance(result, list):
+            raise RuntimeError("CTFtime returned unexpected JSON shape.")
+        return [e for e in result if _unix_from_iso(e.get("finish", "")) < now]
+
+
 def _unix_from_iso(value: str) -> int:
     """Parse ISO datetime string to Unix timestamp, return 0 on error."""
     try:

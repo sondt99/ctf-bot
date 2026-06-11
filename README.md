@@ -59,7 +59,7 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 | `SCOREBOARD_POLL_SECONDS` | No | `30` | Scoreboard polling interval (seconds) |
 | `SCOREBOARD_TOP_N` | No | `10` | Number of teams shown in scoreboard updates |
 | `SCOREBOARD_TEAM_NAME` | No | — | Your team name (for scoreboard tracking) |
-| `TIMEZONE` | No | `UTC+7` | Timezone offset for event display (`UTC+N` or `UTC-N`) |
+| `TIMEZONE` | No | `UTC+7` | Timezone for event display — IANA name (`Asia/Ho_Chi_Minh`) or offset (`UTC+7`) |
 | `CTF_REMOVE_PASSWORD` | No | — | Password required by `/ctf remove` |
 | `DISCORD_GUILD_ID` | No | — | Guild ID for faster slash command sync |
 | `FERNET_KEY` | No | — | Fernet key to encrypt auth tokens at rest (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
@@ -71,8 +71,12 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 | Command | Description | Permission |
 |---|---|---|
 | `/ctf upcoming [limit]` | Browse upcoming CTFs from CTFtime | Everyone |
-| `/ctf join <event_id>` | Create category and channels for an event | Admin |
+| `/ctf running [limit]` | List currently active CTFs from CTFtime | Everyone |
+| `/ctf archive [limit] [days]` | List recently ended CTFs (default: last 30 days) | Everyone |
+| `/ctf join <event_id>` | Create category and channels for an event (auto-creates `@ctf` role) | Admin |
 | `/ctf list` | List joined CTFs and their event IDs | Everyone |
+| `/ctf progress [event_id]` | Show challenge progress with per-category breakdown | Everyone |
+| `/ctf export [event_id] [format]` | Export challenge data as JSON or CSV | Everyone |
 | `/ctf hidden [event_id]` | Hide a CTF category from non-admins | Admin |
 | `/ctf remove [event_id] password` | Delete a CTF category and all associated data | Admin |
 
