@@ -31,6 +31,25 @@ pip install -r requirements.txt
 python -m bot.main
 ```
 
+## Docker Deployment
+
+```bash
+# 1. Copy and edit the env file
+cp .env.example .env
+# Edit .env: set DISCORD_TOKEN, optionally FERNET_KEY, etc.
+
+# 2. Start the bot
+docker compose up -d
+
+# 3. View logs
+docker compose logs -f bot
+
+# 4. Upgrade (after git pull)
+docker compose build --pull && docker compose up -d
+```
+
+The SQLite database is stored in a named Docker volume (`bot_data`) so it persists across restarts and container upgrades.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -40,9 +59,10 @@ python -m bot.main
 | `SCOREBOARD_POLL_SECONDS` | No | `30` | Scoreboard polling interval (seconds) |
 | `SCOREBOARD_TOP_N` | No | `10` | Number of teams shown in scoreboard updates |
 | `SCOREBOARD_TEAM_NAME` | No | — | Your team name (for scoreboard tracking) |
-| `TIMEZONE` | No | `UTC` | Timezone offset for event display (e.g. `UTC+7`) |
+| `TIMEZONE` | No | `UTC+7` | Timezone offset for event display (`UTC+N` or `UTC-N`) |
 | `CTF_REMOVE_PASSWORD` | No | — | Password required by `/ctf remove` |
 | `DISCORD_GUILD_ID` | No | — | Guild ID for faster slash command sync |
+| `FERNET_KEY` | No | — | Fernet key to encrypt auth tokens at rest (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
 
 ## Commands
 
