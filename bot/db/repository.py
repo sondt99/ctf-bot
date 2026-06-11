@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from bot.config import FERNET_KEY
+from bot.crypto import decrypt_token, encrypt_token
+
 
 @dataclass
 class CtfEvent:
@@ -212,6 +215,7 @@ class Repository:
         team_name: str | None,
         scoreboard_channel_id: int,
     ) -> None:
+        stored_token = encrypt_token(auth_token, FERNET_KEY)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -230,7 +234,7 @@ class Repository:
                     ctftime_event_id,
                     type_name,
                     url,
-                    auth_token,
+                    stored_token,
                     team_name,
                     scoreboard_channel_id,
                 ),
@@ -257,19 +261,35 @@ class Repository:
             ctftime_event_id=row[1],
             type=row[2],
             url=row[3],
-            auth_token=row[4],
+            auth_token=decrypt_token(row[4], FERNET_KEY),
             team_name=row[5],
             scoreboard_channel_id=row[6],
         )
 
-    async def list_scoreboard_configs(self) -> list[ScoreboardConfig]:
+    async def list_scoreboard_configs(
+        self, guild_id: int | None = None
+    ) -> list[ScoreboardConfig]:
+        """Return scoreboard configs.
+
+        If guild_id is given, only configs for that guild are returned.
+        Omit guild_id to fetch all configs (used internally by the polling loop).
+        """
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                """
-                SELECT guild_id, ctftime_event_id, type, url, auth_token, team_name, scoreboard_channel_id
-                FROM scoreboard_config
-                """
-            )
+            if guild_id is not None:
+                cursor = await db.execute(
+                    """
+                    SELECT guild_id, ctftime_event_id, type, url, auth_token, team_name, scoreboard_channel_id
+                    FROM scoreboard_config WHERE guild_id=?
+                    """,
+                    (guild_id,),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT guild_id, ctftime_event_id, type, url, auth_token, team_name, scoreboard_channel_id
+                    FROM scoreboard_config
+                    """
+                )
             rows = await cursor.fetchall()
             await cursor.close()
         return [
@@ -278,7 +298,7 @@ class Repository:
                 ctftime_event_id=row[1],
                 type=row[2],
                 url=row[3],
-                auth_token=row[4],
+                auth_token=decrypt_token(row[4], FERNET_KEY),
                 team_name=row[5],
                 scoreboard_channel_id=row[6],
             )

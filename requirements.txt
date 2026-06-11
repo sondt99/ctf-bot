@@ -2,3 +2,4 @@ discord.py
 aiohttp
 aiosqlite
 python-dotenv
+cryptography

@@ -47,6 +47,15 @@ class AuditCog(commands.Cog):
         await self._get_admin_channels(guild)
 
     @commands.Cog.listener()
+    async def on_guild_channel_delete(
+        self, channel: discord.abc.GuildChannel
+    ) -> None:
+        guild = channel.guild
+        cached = self._channel_cache.get(guild.id)
+        if cached and any(c.id == channel.id for c in cached.values()):
+            self._channel_cache.pop(guild.id, None)
+
+    @commands.Cog.listener()
     async def on_app_command_completion(
         self, interaction: discord.Interaction, command: discord.app_commands.Command
     ) -> None:

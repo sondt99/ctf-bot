@@ -142,21 +142,20 @@ class ScoreboardCog(commands.Cog):
                 embed=build_simple_embed("Guild only", "Use this in a server."),
             )
             return
-        configs = await self.repo.list_scoreboard_configs()
-        guild_configs = [
-            c for c in configs if c.guild_id == interaction.guild.id
-        ]
+        guild_configs = await self.repo.list_scoreboard_configs(
+            guild_id=interaction.guild.id
+        )
         if not guild_configs:
             await interaction.response.send_message(
                 embed=build_simple_embed("No configs", "No scoreboard configs found."),
             )
             return
-        lines = []
-        for cfg in guild_configs:
-            team_text = f", team={cfg.team_name}" if cfg.team_name else ""
-            lines.append(
-                f"{cfg.ctftime_event_id}: {cfg.type} ({cfg.url}{team_text})"
-            )
+        lines = [
+            f"{cfg.ctftime_event_id}: {cfg.type} ({cfg.url}"
+            + (f", team={cfg.team_name}" if cfg.team_name else "")
+            + ")"
+            for cfg in guild_configs
+        ]
         await interaction.response.send_message(
             embed=build_simple_embed("Scoreboard configs", "\n".join(lines)),
         )

@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 import discord
 
 from bot.config import TIMEZONE
 
+_log = logging.getLogger(__name__)
+
 
 def _parse_timezone_offset(value: str) -> timezone:
     match = re.fullmatch(r"UTC([+-])(\d{1,2})", value.strip())
     if not match:
+        _log.warning(
+            "Unrecognized TIMEZONE value %r — falling back to UTC. "
+            "Use format UTC+N or UTC-N (e.g., UTC+7).",
+            value,
+        )
         return timezone.utc
     sign = 1 if match.group(1) == "+" else -1
     hours = int(match.group(2))
@@ -28,29 +36,6 @@ def _format_time_range(event: dict) -> str:
     finish_dt = datetime.fromisoformat(finish).astimezone(tz)
     return f"{start_dt:%Y-%m-%d %H:%M} → {finish_dt:%Y-%m-%d %H:%M}"
 
-
-def build_event_embed(event: dict, index: int | None = None) -> discord.Embed:
-    title = event.get("title") or "CTF Event"
-    embed_title = f"{index}. {title}" if index is not None else title
-    embed = discord.Embed(title=embed_title, color=discord.Color.gold())
-    weight_value = event.get("weight")
-    if weight_value is None:
-        weight_text = "N/A"
-    elif isinstance(weight_value, (int, float)):
-        weight_text = f"{weight_value:.2f}"
-    else:
-        weight_text = str(weight_value)
-    embed.add_field(name="Format", value=event.get("format") or "N/A", inline=True)
-    embed.add_field(name="Rating Weight", value=weight_text, inline=True)
-
-    embed.add_field(name="Time", value=_format_time_range(event), inline=False)
-
-    ctftime_url = event.get("ctftime_url")
-    site_url = event.get("url")
-    embed.add_field(name="CTFtime", value=ctftime_url or "N/A", inline=True)
-    embed.add_field(name="URL", value=site_url or "N/A", inline=True)
-
-    return embed
 
 
 def build_simple_embed(title: str, description: str) -> discord.Embed:

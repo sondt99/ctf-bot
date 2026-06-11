@@ -169,6 +169,7 @@ class CategoryMappingView(discord.ui.View):
         self.confirmed = False
         self.cancelled = False
         self.timed_out = False
+        self._message: discord.Message | None = None
         self.mappings = {
             category: _default_topic_for_category(category) for category in categories
         }
@@ -193,6 +194,21 @@ class CategoryMappingView(discord.ui.View):
     async def on_timeout(self) -> None:
         self.timed_out = True
         self.stop()
+        if self._message is not None:
+            for item in self.children:
+                if hasattr(item, "disabled"):
+                    item.disabled = True  # type: ignore[union-attr]
+            try:
+                await self._message.edit(
+                    embed=build_simple_embed(
+                        "Timed out",
+                        "Category mapping expired after 5 minutes. "
+                        "Re-run `/challenge-fetch` to try again.",
+                    ),
+                    view=self,
+                )
+            except discord.NotFound:
+                pass
 
     def refresh_items(self) -> None:
         self.clear_items()
@@ -765,6 +781,7 @@ class ChallengeCog(commands.Cog):
             ephemeral=True,
             wait=True,
         )
+        mapping_view._message = mapping_message
         await mapping_view.wait()
 
         if mapping_view.cancelled:

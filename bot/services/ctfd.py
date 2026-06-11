@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import logging
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from html import unescape
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import aiohttp
+
+_DETAIL_CONCURRENCY = 8
 
 
 log = logging.getLogger(__name__)
@@ -213,6 +216,24 @@ def _normalize_challenge(raw: dict, base_url: str) -> CtfdChallenge | None:
     )
 
 
+async def _fetch_challenge_detail(
+    session: aiohttp.ClientSession,
+    base: str,
+    challenge_id: int,
+    sem: asyncio.Semaphore,
+) -> dict | None:
+    """Fetch a single challenge's detail endpoint, respecting the concurrency semaphore."""
+    detail_url = urljoin(base, f"api/v1/challenges/{challenge_id}")
+    async with sem:
+        try:
+            detail_payload = await _get_json(session, detail_url)
+            detail = detail_payload.get("data")
+            return detail if isinstance(detail, dict) else None
+        except Exception as exc:
+            log.info("Could not fetch CTFd challenge detail for %s: %s", challenge_id, exc)
+            return None
+
+
 async def fetch_ctfd_challenges(
     base_url: str, auth_token: str | None = None
 ) -> list[CtfdChallenge]:
@@ -228,27 +249,25 @@ async def fetch_ctfd_challenges(
                 if not isinstance(raw_challenges, list):
                     raise RuntimeError("CTFd /api/v1/challenges returned no data list.")
 
+                # Fetch all challenge details concurrently (capped at _DETAIL_CONCURRENCY)
+                valid_raws = [r for r in raw_challenges if isinstance(r, dict)]
+                sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
+
+                async def _detail_or_none(raw: dict) -> dict | None:
+                    cid = _to_int(raw.get("id"))
+                    if cid is None:
+                        return None
+                    return await _fetch_challenge_detail(session, base, cid, sem)
+
+                details = await asyncio.gather(
+                    *[_detail_or_none(r) for r in valid_raws]
+                )
+
                 challenges: list[CtfdChallenge] = []
-                for raw in raw_challenges:
-                    if not isinstance(raw, dict):
-                        continue
-
+                for raw, detail in zip(valid_raws, details):
                     merged = dict(raw)
-                    challenge_id = _to_int(merged.get("id"))
-                    if challenge_id is not None:
-                        detail_url = urljoin(base, f"api/v1/challenges/{challenge_id}")
-                        try:
-                            detail_payload = await _get_json(session, detail_url)
-                            detail = detail_payload.get("data")
-                            if isinstance(detail, dict):
-                                merged.update(detail)
-                        except Exception as exc:
-                            log.info(
-                                "Could not fetch CTFd challenge detail for %s: %s",
-                                challenge_id,
-                                exc,
-                            )
-
+                    if isinstance(detail, dict):
+                        merged.update(detail)
                     challenge = _normalize_challenge(merged, base)
                     if challenge is not None:
                         challenges.append(challenge)
