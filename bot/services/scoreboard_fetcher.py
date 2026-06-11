@@ -109,6 +109,7 @@ def _scoreboard_auth_values(auth_token: str | None) -> list[str | None]:
 
 async def fetch_ctfd_scoreboard(base_url: str, auth_token: str | None = None) -> list[dict]:
     base = base_url.rstrip("/") + "/"
+    got_auth_error = False
 
     for auth_value in _scoreboard_auth_values(auth_token):
         headers: dict[str, str] = {"User-Agent": "ctf-bot/1.0"}
@@ -124,13 +125,19 @@ async def fetch_ctfd_scoreboard(base_url: str, auth_token: str | None = None) ->
                         if "json" not in ct:
                             continue
                         if resp.status in {401, 403}:
-                            break  # Wrong auth scheme, try next
+                            got_auth_error = True
+                            break  # Wrong auth scheme — try next scheme
                         payload = await resp.json()
                 except Exception:
                     continue
                 if isinstance(payload, dict) and _looks_like_ctfd_scoreboard(payload):
                     return _normalize_entries(payload["data"])
 
+    if got_auth_error:
+        raise RuntimeError(
+            "CTFd returned HTTP 401/403 — the auth_token is missing or incorrect. "
+            "Check the token configured via /scoreboard."
+        )
     raise RuntimeError("CTFd scoreboard endpoint not found or invalid.")
 
 

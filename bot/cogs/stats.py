@@ -255,7 +255,20 @@ class StatsCog(commands.Cog):
             return
 
         limit_per_channel = max(50, min(limit_per_channel, 5000))
-        targets = self._get_sync_targets(interaction.guild, channel)
+        targets: list[discord.TextChannel | discord.Thread] = list(
+            self._get_sync_targets(interaction.guild, channel)
+        )
+
+        # Also scan archived threads — guild.threads only returns active ones
+        source_channels: list[discord.TextChannel] = (
+            [channel] if channel is not None else list(interaction.guild.text_channels)
+        )
+        for tc in source_channels:
+            try:
+                async for archived in tc.archived_threads(limit=None):
+                    targets.append(archived)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
 
         await interaction.response.defer(thinking=True, ephemeral=True)
 

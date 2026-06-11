@@ -14,7 +14,7 @@ from bot.services.guild_setup import (
     delete_ctf_category_and_channels,
     hide_ctf_category_and_channels,
 )
-from bot.utils.embeds import build_event_embed, build_simple_embed
+from bot.utils.embeds import build_simple_embed
 from bot.views.ctf_pagination import CtfPaginationView
 
 
