@@ -180,6 +180,15 @@ async def test_list_challenges_solved_status(repo):
     assert challenges[0].status == "done"
     assert challenges[0].solved_by == [42, 99]
 
+    reopened = await repo.mark_challenge_open(thread_id=3001)
+    assert reopened is True
+
+    challenges = await repo.list_challenges(guild_id=20, ctftime_event_id=777)
+    assert len(challenges) == 1
+    assert challenges[0].status == "open"
+    assert challenges[0].solved_by == []
+    assert challenges[0].solved_at is None
+
 
 # ── Feature 3: progress command logic ────────────────────────────────────────
 

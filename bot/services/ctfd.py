@@ -139,7 +139,7 @@ def _clean_text(value: object) -> str | None:
 
 
 def _to_int(value: object) -> int | None:
-    if value is None:
+    if not isinstance(value, str | bytes | bytearray | int | float):
         return None
     try:
         return int(value)
@@ -148,7 +148,7 @@ def _to_int(value: object) -> int | None:
 
 
 def _to_number(value: object) -> int | float | None:
-    if value is None:
+    if not isinstance(value, str | bytes | bytearray | int | float):
         return None
     try:
         number = float(value)

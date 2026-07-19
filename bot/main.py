@@ -18,7 +18,10 @@ class CtfBot(commands.Bot):
         intents.guilds = True
         intents.messages = True
         super().__init__(command_prefix="!", intents=intents)
-        self.repo = Repository(DATABASE_PATH)
+        if DATABASE_PATH is None:
+            raise RuntimeError("DATABASE_PATH must be configured")
+        self.db_path = DATABASE_PATH
+        self.repo = Repository(self.db_path)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None:
@@ -26,7 +29,7 @@ class CtfBot(commands.Bot):
         await self.process_commands(message)
 
     async def setup_hook(self) -> None:
-        await init_db(DATABASE_PATH)
+        await init_db(self.db_path)
         await self.load_extension("bot.cogs.ctf")
         await self.load_extension("bot.cogs.challenge")
         await self.load_extension("bot.cogs.scoreboard_cog")

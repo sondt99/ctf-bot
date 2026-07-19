@@ -51,7 +51,7 @@ ctf-bot is a Discord bot built with `discord.py` (Cog-based) backed by an async 
 | `bot/config.py` | Centralised env-var access (validated at import time) |
 | `bot/crypto.py` | Fernet encrypt/decrypt for auth tokens at rest |
 | `bot/cogs/ctf.py` | `/ctf *` slash commands (join, list, progress, export, archive, …) |
-| `bot/cogs/challenge.py` | `/challenge`, `/done`, `/challenges`, `/challenge-fetch` |
+| `bot/cogs/challenge.py` | `/challenge`, `/done`, `/undone`, `/challenges`, `/challenge-fetch` |
 | `bot/cogs/scoreboard_cog.py` | `/scoreboard*` commands + polling background task |
 | `bot/cogs/stats.py` | `/stats` commands (leaderboard, user, sync) |
 | `bot/cogs/audit.py` | Private BOT category + `/backup` |

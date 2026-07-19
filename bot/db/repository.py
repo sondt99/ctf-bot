@@ -654,6 +654,19 @@ class Repository:
             )
             await db.commit()
 
+    async def mark_challenge_open(self, thread_id: int) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE challenges
+                SET status='open', solved_by='[]', solved_at=NULL
+                WHERE thread_id=?
+                """,
+                (thread_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def list_challenges(
         self, guild_id: int, ctftime_event_id: int
     ) -> list[Challenge]:
