@@ -18,8 +18,8 @@ ctf-bot is a Discord bot built with `discord.py` (Cog-based) backed by an async 
 │   bot/cogs/     │               │  tasks.loop()       │
 │  ctf.py         │               │  scoreboard_poll    │
 │  challenge.py   │               │  ctfd_poll          │
-│  scoreboard.py  │               └────────────────────┘
-│  stats.py       │
+│  scoreboard_cog.py │            └────────────────────┘
+│  stats.py          │
 │  audit.py       │
 └──────┬──────────┘
        │ calls
@@ -50,9 +50,9 @@ ctf-bot is a Discord bot built with `discord.py` (Cog-based) backed by an async 
 | `bot/main.py` | Entry point, `CtfBot` class, extension loading |
 | `bot/config.py` | Centralised env-var access (validated at import time) |
 | `bot/crypto.py` | Fernet encrypt/decrypt for auth tokens at rest |
-| `bot/cogs/ctf.py` | `/ctf *` slash commands (join, list, progress, export, archive, …) |
-| `bot/cogs/challenge.py` | `/challenge`, `/done`, `/undone`, `/challenges`, `/challenge-fetch` |
-| `bot/cogs/scoreboard_cog.py` | `/scoreboard*` commands + polling background task |
+| `bot/cogs/ctf.py` | `/ctf *` slash commands (upcoming, running, archive, join, list, progress, export, hidden, remove) |
+| `bot/cogs/challenge.py` | `/challenge`, `/challenge-fetch`, `/done`, `/undone`, `/remove-challenge`, `/challenges`, `/ping`, plus CTFd new-challenge auto-polling |
+| `bot/cogs/scoreboard_cog.py` | `/scoreboard`, `/scoreboard_list`, `/scoreboard_remove`, plus scoreboard polling background task |
 | `bot/cogs/stats.py` | `/stats` commands (leaderboard, user, sync) |
 | `bot/cogs/audit.py` | Private BOT category + `/backup` |
 | `bot/services/ctftime.py` | CTFtime API calls with exponential-backoff retry |
@@ -85,6 +85,17 @@ scoreboard_cog.ScoreboardCog (discord.ext.tasks.loop, every N seconds)
   → hash new payload vs repo.get_scoreboard_state()
   → if changed: send embed to scoreboard channel
   → repo.upsert_scoreboard_state()
+```
+
+## Data Flow: CTFd Challenge Auto-Polling
+
+```
+challenge.ChallengeCog (discord.ext.tasks.loop, every N minutes when enabled)
+  → repo.list_scoreboard_configs()        # only CTFd configs are eligible
+  → fetch_ctfd_challenges(config.url, config.auth_token)
+  → compare fetched CTFd IDs against tracked challenges
+  → create threads for newly released challenges using default topic mapping
+  → notify the event's general channel
 ```
 
 ## Concurrency Model

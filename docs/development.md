@@ -63,13 +63,15 @@ pytest tests/test_ctftime_service.py::test_fetch_archived_events_filters_running
 
 The test suite does **not** require a running Discord server or real API credentials — all external calls are mocked.
 
-## Type Checking
+## Type Checking and Linting
 
 ```bash
 python -m pyright
+python -m ruff check .
+python -m compileall bot tests scoreboard
 ```
 
-The project targets Pyright's default (basic) mode. All `✘` errors and `⚠` warnings must be clean before a PR is merged. `★` information-level hints in test mock code are acceptable when they cannot be eliminated without reducing readability.
+The project targets Pyright's default (basic) mode. All Pyright errors and Ruff findings must be clean before a PR is merged. Compile checks should pass for all runtime modules, tests, and scoreboard helper scripts.
 
 ## Project Structure
 
@@ -99,7 +101,7 @@ ctf-bot/
 2. Add an `@app_commands.command` method.
 3. If it needs database access, add a method to `Repository` in `bot/db/repository.py` and update the schema in `bot/db/database.py` if needed.
 4. Write tests in `tests/` covering the new logic.
-5. Run `pytest` and `pyright` — both must be clean.
+5. Run `pytest`, `pyright`, `ruff`, and `compileall` — all must be clean.
 
 ## Adding a New Service
 

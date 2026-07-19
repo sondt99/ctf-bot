@@ -35,13 +35,13 @@ One row per tracked challenge thread.
 | `guild_id` | INTEGER | |
 | `ctftime_event_id` | INTEGER | FK → `ctf_events` |
 | `challenge_name` | TEXT | |
-| `category` | TEXT | e.g. `web`, `pwn` |
+| `category` | TEXT | Topic/category label, e.g. `WEB`, `PWN`, `CRYPTO` |
 | `thread_id` | INTEGER | UNIQUE — Discord thread ID |
 | `channel_id` | INTEGER | Parent topic channel |
-| `status` | TEXT | `open` or `done` |
-| `solved_by` | TEXT | JSON array of Discord user IDs |
+| `status` | TEXT | `open` or `done`; `/undone` changes solved challenges back to `open` |
+| `solved_by` | TEXT | JSON array of Discord user IDs; reset to `[]` by `/undone` |
 | `created_at` | TEXT | ISO-8601 UTC |
-| `solved_at` | TEXT | ISO-8601 UTC, nullable |
+| `solved_at` | TEXT | ISO-8601 UTC, nullable; reset to `NULL` by `/undone` |
 | `ctfd_challenge_id` | INTEGER | nullable — CTFd challenge ID |
 | `ctfd_description` | TEXT | nullable — cached description |
 | `ctfd_files_json` | TEXT | nullable — JSON array of file URLs |

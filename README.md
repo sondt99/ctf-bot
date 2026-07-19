@@ -11,13 +11,14 @@ A Discord bot for organizing Capture The Flag competitions. It integrates with C
 
 ## Features
 
-- **CTFtime integration** — browse and join upcoming CTF events with pagination
-- **Challenge management** — create threads per challenge, bulk-import CTFd challenges, track solved/open status
+- **CTFtime integration** — browse upcoming, running, and recently ended CTF events with pagination
+- **Challenge management** — create threads per challenge, bulk-import CTFd challenges, reopen mistaken solves, and track solved/open status
 - **Live scoreboard** — periodic polling with change notifications for CTFd and rCTF
+- **CTFd auto-polling** — optionally poll configured CTFd scoreboards and create threads for newly released challenges
 - **Message statistics** — per-user leaderboard, activity breakdown, and historical backfill
 - **Multi-event support** — run multiple CTFs simultaneously, each with its own category
-- **Role-based access** — `@ctf` role members can mark challenges as solved; admin commands remain admin-only
-- **Audit logging** — automatic private `BOT` category with command logs and manual database backups
+- **Role-based access** — `@ctf` role members can solve, reopen, and ping challenge threads; admin commands remain admin-only
+- **Audit logging** — automatic private `BOT` category with command logs and manual or scheduled database backups
 
 ## Requirements
 
@@ -70,6 +71,8 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 | `CTF_REMOVE_PASSWORD` | No | — | Password required by `/ctf remove` |
 | `DISCORD_GUILD_ID` | No | — | Guild ID for faster slash command sync |
 | `FERNET_KEY` | No | — | Fernet key to encrypt auth tokens at rest (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
+| `CTFD_POLL_INTERVAL_MINUTES` | No | `0` | Auto-poll CTFd scoreboard configs for new challenges (0 = disabled) |
+| `AUTO_BACKUP_INTERVAL_HOURS` | No | `0` | Auto-post database backups to the private `BOT/#backup` channel (0 = disabled) |
 
 ## Commands
 
@@ -97,6 +100,7 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 | `/undone` | Reopen a mistakenly solved challenge and remove the `[DONE]` thread prefix | Admin / `@ctf` role |
 | `/challenges [event_id]` | List all challenges with status and thread links | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
+| `/ping [message] [event_id]` | Ping `@ctf` in every open challenge thread for an event | Admin / `@ctf` role |
 
 ### Scoreboard
 
@@ -112,7 +116,13 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 |---|---|---|
 | `/stats leaderboard [limit] [channel]` | Top users by message count | Everyone |
 | `/stats user <member>` | Per-user message stats, rank, and active channels | Everyone |
-| `/stats sync [limit] [channel]` | Backfill message history into stats | Admin |
+| `/stats sync [limit_per_channel] [channel]` | Backfill message history into stats | Admin |
+
+### Audit and Backup
+
+| Command | Description | Permission |
+|---|---|---|
+| `/backup` | Upload the SQLite database to the private `BOT/#backup` channel | Admin |
 
 ## Workflow
 
@@ -123,8 +133,9 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 3. Or go to a topic channel and run /challenge <name> for manual threads
 4. Work on the challenge in the thread
 5. /done @solver                 → Mark solved, thread renamed to [DONE]
-   /undone                       → Reopen it if /done was clicked by mistake
-6. /challenges                   → Overview with clickable thread links
+   /undone                       → Reopen it if /done was used by mistake
+6. /ping                         → Remind solvers in every open challenge thread
+7. /challenges                   → Overview with clickable thread links
 ```
 
 ## Channels Created on Join
@@ -170,10 +181,12 @@ The bot requires these Discord permissions:
 
 ## Notes
 
-- The `@ctf` role must be created manually in your server for `/done` access to work.
+- `/ctf join` auto-creates the `@ctf` role when the bot has `Manage Roles`; create it manually if Discord permissions prevent auto-creation.
+- `@ctf` members can use `/done`, `/undone`, and `/ping`; other administrative commands require Discord administrator permission.
 - `/challenge-fetch` asks for category mapping every run, so new CTFd categories added mid-event can be routed before import.
-- Existing CTFd challenge threads are updated only when the description or file links change; point/solve-count changes alone are skipped. Threads marked with `/done` are not updated.
+- Existing CTFd challenge threads are updated only when the description or file links change; point/solve-count changes alone are skipped. Threads marked with `/done` are not updated until reopened with `/undone`.
 - `/challenge-fetch` accepts either a full CTFd URL (`http://localhost:8000`) or a host-only URL (`localhost:8000`).
+- `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd `/scoreboard` configs to detect newly released challenges; it does not ask for manual category mapping and falls back to default topic mapping.
 - Message statistics only track messages sent after the bot is deployed, unless you run `/stats sync`.
 - Scoreboard polling for rCTF uses the public API directly — no browser dependency required.
 - The bot uses SQLite. For production use, ensure the database file is on a persistent volume.
