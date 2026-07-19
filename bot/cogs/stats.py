@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Protocol, cast
 
 import discord
 from discord import app_commands
@@ -16,6 +17,12 @@ from bot.utils.embeds import build_simple_embed
 
 
 logger = logging.getLogger(__name__)
+
+
+class BotWithRepo(Protocol):
+    repo: Repository
+
+
 _TRACKED_MESSAGE_TYPES = {
     discord.MessageType.default,
     discord.MessageType.reply,
@@ -69,12 +76,13 @@ class StatsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if not self._should_track_message(message):
+        guild = message.guild
+        if guild is None or not self._should_track_message(message):
             return
         try:
             await self.repo.record_message(
                 message_id=message.id,
-                guild_id=message.guild.id,
+                guild_id=guild.id,
                 channel_id=message.channel.id,
                 user_id=message.author.id,
                 created_at=message.created_at.astimezone(timezone.utc).isoformat(),
@@ -244,7 +252,7 @@ class StatsCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not interaction.permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only",
@@ -284,12 +292,13 @@ class StatsCog(commands.Cog):
                     oldest_first=True,
                 ):
                     scanned += 1
-                    if not self._should_track_message(message):
+                    guild = message.guild
+                    if guild is None or not self._should_track_message(message):
                         continue
                     batch.append(
                         (
                             message.id,
-                            message.guild.id,
+                            guild.id,
                             message.channel.id,
                             message.author.id,
                             message.created_at.astimezone(timezone.utc).isoformat(),
@@ -321,4 +330,5 @@ class StatsCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(StatsCog(bot, bot.repo))
+    repo = cast(BotWithRepo, bot).repo
+    await bot.add_cog(StatsCog(bot, repo))

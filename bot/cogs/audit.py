@@ -21,7 +21,7 @@ class AuditCog(commands.Cog):
             self.auto_backup_loop.change_interval(hours=AUTO_BACKUP_INTERVAL_HOURS)
             self.auto_backup_loop.start()
 
-    def cog_unload(self) -> None:
+    async def cog_unload(self) -> None:
         self.auto_backup_loop.cancel()
 
     @tasks.loop(hours=24)
@@ -150,7 +150,7 @@ class AuditCog(commands.Cog):
             )
             return
 
-        if not interaction.user.guild_permissions.administrator:
+        if not interaction.permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed("Admin only", "Only admins can use this command."),
                 ephemeral=True,

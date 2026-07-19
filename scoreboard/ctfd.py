@@ -9,12 +9,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE = os.getenv("CTFD_BASE_URL")
-OUT = os.getenv("CTFD_OUT")
-if not BASE or not OUT:
+base = os.getenv("CTFD_BASE_URL")
+out = os.getenv("CTFD_OUT")
+if not base or not out:
     raise SystemExit("Missing .env: requires CTFD_BASE_URL and CTFD_OUT (see .env.example)")
-BASE = BASE.rstrip("/") + "/"
-OUT = Path(OUT)
+BASE: str = base.rstrip("/") + "/"
+OUT: Path = Path(out)
 
 # Common endpoints to try
 CANDIDATES = [

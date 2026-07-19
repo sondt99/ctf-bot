@@ -123,6 +123,7 @@ repo.create_challenge(...) -> int | None          # returns new challenge id
 repo.get_challenge_by_thread(thread_id) -> Challenge | None
 repo.list_challenges(guild_id, ctftime_event_id) -> list[Challenge]
 repo.mark_challenge_done(thread_id, solver_ids)
+repo.mark_challenge_open(thread_id) -> bool
 repo.update_challenge_ctfd_metadata(thread_id, ...)
 repo.delete_challenge_by_thread(thread_id)
 repo.delete_challenges_for_event(guild_id, ctftime_event_id)

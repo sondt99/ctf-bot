@@ -94,6 +94,7 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 | `/challenge <name>` | Create a thread for a challenge (must be in a topic channel) | Everyone |
 | `/challenge-fetch <event_id> <url> [auth_token]` | Fetch CTFd challenges, map CTFd categories to topic channels, create missing threads, and refresh CTFd embeds only when description/files change | Admin |
 | `/done <solver> [solver2] ...` | Mark a challenge as solved and rename the thread | Admin / `@ctf` role |
+| `/undone` | Reopen a mistakenly solved challenge and remove the `[DONE]` thread prefix | Admin / `@ctf` role |
 | `/challenges [event_id]` | List all challenges with status and thread links | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
 
@@ -122,6 +123,7 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 3. Or go to a topic channel and run /challenge <name> for manual threads
 4. Work on the challenge in the thread
 5. /done @solver                 → Mark solved, thread renamed to [DONE]
+   /undone                       → Reopen it if /done was clicked by mistake
 6. /challenges                   → Overview with clickable thread links
 ```
 

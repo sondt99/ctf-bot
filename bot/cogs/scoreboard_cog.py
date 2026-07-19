@@ -26,7 +26,7 @@ class ScoreboardCog(commands.Cog):
         self.scoreboard_loop.start()
         asyncio.create_task(self._run_initial_check())
 
-    def cog_unload(self) -> None:
+    async def cog_unload(self) -> None:
         self.scoreboard_loop.cancel()
 
     @app_commands.command(name="scoreboard", description="Configure scoreboard polling")
@@ -58,7 +58,7 @@ class ScoreboardCog(commands.Cog):
                 embed=build_simple_embed("Guild only", "Use this in a server."),
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not interaction.permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only", "Only admins can configure scoreboard."
@@ -171,7 +171,7 @@ class ScoreboardCog(commands.Cog):
                 embed=build_simple_embed("Guild only", "Use this in a server."),
             )
             return
-        if not interaction.user.guild_permissions.administrator:
+        if not interaction.permissions.administrator:
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Admin only", "Only admins can remove scoreboard configs."

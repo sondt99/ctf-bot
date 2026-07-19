@@ -1359,6 +1359,90 @@ class ChallengeCog(commands.Cog):
             )
         )
 
+    # ── /undone ──────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="undone",
+        description="Reopen the current challenge thread after a mistaken /done",
+    )
+    async def undone(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+                ephemeral=True,
+            )
+            return
+
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        is_admin = member is not None and member.guild_permissions.administrator
+        has_ctf_role = member is not None and discord.utils.get(member.roles, name="ctf") is not None
+        if not is_admin and not has_ctf_role:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No permission", "Only admins or @ctf role members can use this command."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Wrong channel",
+                    "Use this command inside a challenge thread.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        challenge = await self.repo.get_challenge_by_thread(thread.id)
+        if challenge is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Not tracked",
+                    "This thread is not tracked as a challenge.",
+                ),
+                ephemeral=True,
+            )
+            return
+        if challenge.status != "done":
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Already open",
+                    "This challenge is already marked as open.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        updated = await self.repo.mark_challenge_open(thread.id)
+        if not updated:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Failed",
+                    "Could not reopen the challenge. It may have been removed.",
+                ),
+            )
+            return
+
+        if thread.name.upper().startswith("[DONE]"):
+            new_name = thread.name[6:].strip() or challenge.challenge_name
+            await thread.edit(name=new_name)
+        else:
+            new_name = thread.name
+
+        await interaction.followup.send(
+            embed=build_simple_embed(
+                "Challenge Reopened",
+                f"**Challenge:** {challenge.challenge_name}\n"
+                f"**Category:** {challenge.category}\n\n"
+                f"Thread renamed to `{new_name}`.",
+            )
+        )
+
     # ── /remove-challenge ─────────────────────────────────────────────
 
     @app_commands.command(

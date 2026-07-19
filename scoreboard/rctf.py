@@ -11,11 +11,12 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 
-URL = os.getenv("RCTF_URL")
-OUT = os.getenv("RCTF_OUT")
-if not URL or not OUT:
+url = os.getenv("RCTF_URL")
+out = os.getenv("RCTF_OUT")
+if not url or not out:
     raise SystemExit("Missing .env: requires RCTF_URL and RCTF_OUT (see .env.example)")
-OUT = Path(OUT)
+URL: str = url
+OUT: Path = Path(out)
 
 # Heuristic: capture requests related to leaderboard/score
 PAT = re.compile(r"(score|scores|leader|leaderboard|standing|rank)", re.I)
