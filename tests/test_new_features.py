@@ -153,6 +153,76 @@ async def test_list_challenges_empty_for_other_guild(repo):
     assert challenges == []
 
 
+def test_format_challenge_list_line_open():
+    """Open challenges show status, name, category, and thread — no solvers."""
+    from bot.cogs.challenge import format_challenge_list_line
+    from bot.db.repository import Challenge
+
+    challenge = Challenge(
+        id=1,
+        guild_id=1,
+        ctftime_event_id=1,
+        challenge_name="sqli-1",
+        category="WEB",
+        thread_id=111,
+        channel_id=222,
+        status="open",
+        solved_by=[],
+        created_at="2026-01-01T00:00:00+00:00",
+        solved_at=None,
+    )
+    line = format_challenge_list_line(challenge)
+    assert line == "🔓 **sqli-1** [WEB] <#111>"
+    assert "by" not in line
+
+
+def test_format_challenge_list_line_solved_with_solvers():
+    """Solved challenges list Discord mentions for each solver."""
+    from bot.cogs.challenge import format_challenge_list_line
+    from bot.db.repository import Challenge
+
+    challenge = Challenge(
+        id=2,
+        guild_id=1,
+        ctftime_event_id=1,
+        challenge_name="heap-1",
+        category="PWN",
+        thread_id=333,
+        channel_id=444,
+        status="done",
+        solved_by=[42, 99],
+        created_at="2026-01-01T00:00:00+00:00",
+        solved_at="2026-01-02T00:00:00+00:00",
+    )
+    line = format_challenge_list_line(challenge)
+    assert line.startswith("✅ **heap-1** [PWN] <#333>")
+    assert "<@42>" in line
+    assert "<@99>" in line
+    assert "by" in line
+
+
+def test_format_challenge_list_line_solved_unknown():
+    """Done challenges with empty solved_by show an unknown placeholder."""
+    from bot.cogs.challenge import format_challenge_list_line
+    from bot.db.repository import Challenge
+
+    challenge = Challenge(
+        id=3,
+        guild_id=1,
+        ctftime_event_id=1,
+        challenge_name="legacy",
+        category="MISC",
+        thread_id=555,
+        channel_id=666,
+        status="done",
+        solved_by=[],
+        created_at="2026-01-01T00:00:00+00:00",
+        solved_at="2026-01-02T00:00:00+00:00",
+    )
+    line = format_challenge_list_line(challenge)
+    assert "*(unknown)*" in line
+
+
 @pytest.mark.asyncio
 async def test_list_challenges_solved_status(repo):
     """list_challenges returns correct status after marking done."""

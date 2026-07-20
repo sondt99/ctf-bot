@@ -67,6 +67,26 @@ _UNCATEGORIZED = "Uncategorized"
 _CHALLENGES_PAGE_SIZE = 10
 
 
+def format_challenge_list_line(challenge: Challenge) -> str:
+    """Format one challenge row for the /challenges embed.
+
+    Solved challenges include Discord mentions for everyone in ``solved_by``.
+    """
+    status_icon = "✅" if challenge.status == "done" else "🔓"
+    thread_link = f"<#{challenge.thread_id}>"
+    line = (
+        f"{status_icon} **{challenge.challenge_name}** "
+        f"[{challenge.category}] {thread_link}"
+    )
+    if challenge.status == "done":
+        if challenge.solved_by:
+            solvers = ", ".join(f"<@{uid}>" for uid in challenge.solved_by)
+            line = f"{line}\n  by {solvers}"
+        else:
+            line = f"{line}\n  by *(unknown)*"
+    return line
+
+
 class ChallengesView(discord.ui.View):
     def __init__(
         self,
@@ -100,11 +120,7 @@ class ChallengesView(discord.ui.View):
         page_challenges = self.challenges[start : start + _CHALLENGES_PAGE_SIZE]
         total = len(self.challenges)
         solved = sum(1 for c in self.challenges if c.status == "done")
-        lines = []
-        for c in page_challenges:
-            status_icon = "✅" if c.status == "done" else "🔓"
-            thread_link = f"<#{c.thread_id}>"
-            lines.append(f"{status_icon} **{c.challenge_name}** [{c.category}] {thread_link}")
+        lines = [format_challenge_list_line(c) for c in page_challenges]
         embed = discord.Embed(
             title=f"Challenges — {self.event_title}",
             description="\n".join(lines) or "No challenges.",

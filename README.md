@@ -98,7 +98,7 @@ The SQLite database is stored in a named Docker volume (`bot_data`) so it persis
 | `/challenge-fetch <event_id> <url> [auth_token]` | Fetch CTFd challenges, map CTFd categories to topic channels, create missing threads, and refresh CTFd embeds only when description/files change | Admin |
 | `/done <solver> [solver2] ...` | Mark a challenge as solved and rename the thread | Admin / `@ctf` role |
 | `/undone` | Reopen a mistakenly solved challenge and remove the `[DONE]` thread prefix | Admin / `@ctf` role |
-| `/challenges [event_id]` | List all challenges with status and thread links | Everyone |
+| `/challenges [event_id]` | List all challenges with status, solvers, and thread links | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
 | `/ping [message] [event_id]` | Ping `@ctf` in every open challenge thread for an event | Admin / `@ctf` role |
 
