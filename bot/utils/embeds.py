@@ -52,32 +52,77 @@ def build_simple_embed(title: str, description: str) -> discord.Embed:
     )
 
 
+def _rank_medal(pos: int) -> str:
+    return {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(pos, "")
+
+
+def _rank_arrow(name: str, prev_ranks: dict[str, int], current_pos: int) -> str:
+    prev = prev_ranks.get(name)
+    if prev is None or prev == current_pos:
+        return ""
+    if prev > current_pos:
+        return f" ▲{prev - current_pos}"
+    return f" ▼{current_pos - prev}"
+
+
 def build_scoreboard_embed(
     entries: list[dict],
     changes: list[str],
     source_url: str,
     top_n: int = 10,
+    tracked_team: str | None = None,
+    prev_ranks: dict[str, int] | None = None,
+    event_title: str | None = None,
 ) -> discord.Embed:
-    embed = discord.Embed(title="Scoreboard Update", color=discord.Color.gold())
-    embed.add_field(name="Source", value=source_url, inline=False)
+    title = f"Scoreboard — {event_title}" if event_title else "Scoreboard Update"
+    embed = discord.Embed(title=title, color=discord.Color.gold())
+
+    _prev = prev_ranks or {}
+    team_lower = (tracked_team or "").lower()
 
     if entries:
-        if len(entries) == 1:
-            entry = entries[0]
-            embed.add_field(
-                name="Team",
-                value=f"{entry['name']} — {entry['score']} (pos {entry['pos']})",
-                inline=False,
-            )
-        else:
-            lines = []
-            for entry in entries[:top_n]:
-                lines.append(f"{entry['pos']}. {entry['name']} — {entry['score']}")
-            embed.add_field(name="Scores", value="\n".join(lines), inline=False)
+        lines: list[str] = []
+        for entry in entries[:top_n]:
+            pos = entry["pos"]
+            name = entry["name"]
+            score = entry["score"]
+            medal = _rank_medal(pos)
+            arrow = _rank_arrow(name, _prev, pos)
+
+            is_tracked = team_lower and name.lower() == team_lower
+            if is_tracked:
+                line = f"**`{pos:>2}.` {medal} {name} — {score}{arrow}** ⭐"
+            else:
+                line = f"`{pos:>2}.` {medal} {name} — {score}{arrow}"
+            lines.append(line)
+
+        embed.description = "\n".join(lines)
+
+    tracked_entry = None
+    if team_lower:
+        tracked_entry = next(
+            (e for e in entries if e["name"].lower() == team_lower), None,
+        )
+    if tracked_entry:
+        arrow = _rank_arrow(tracked_entry["name"], _prev, tracked_entry["pos"])
+        embed.add_field(
+            name="Your team",
+            value=(
+                f"**{tracked_entry['name']}** — "
+                f"Rank `#{tracked_entry['pos']}`{arrow} | "
+                f"Score `{tracked_entry['score']}`"
+            ),
+            inline=False,
+        )
 
     if changes:
-        embed.add_field(name="Changes", value="\n".join(changes[:5]), inline=False)
+        embed.add_field(
+            name="Rank changes",
+            value="\n".join(changes[:8]),
+            inline=False,
+        )
 
+    embed.set_footer(text=source_url)
     return embed
 
 

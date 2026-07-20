@@ -73,10 +73,12 @@ def test_build_scoreboard_embed_single_team():
     from bot.utils.embeds import build_scoreboard_embed
 
     entries = [{"pos": 3, "name": "OurTeam", "score": 500}]
-    embed = build_scoreboard_embed(entries, [], "http://ctf.example.com")
+    embed = build_scoreboard_embed(
+        entries, [], "http://ctf.example.com", tracked_team="OurTeam",
+    )
     assert embed.title == "Scoreboard Update"
     field_names = [f.name for f in embed.fields]
-    assert "Team" in field_names
+    assert "Your team" in field_names
 
 
 def test_build_scoreboard_embed_with_changes():
@@ -89,7 +91,7 @@ def test_build_scoreboard_embed_with_changes():
     changes = ["TeamA up to 1 (1000)"]
     embed = build_scoreboard_embed(entries, changes, "http://ctf.example.com")
     field_names = [f.name for f in embed.fields]
-    assert "Changes" in field_names
+    assert "Rank changes" in field_names
 
 
 def test_build_event_embed_removed():

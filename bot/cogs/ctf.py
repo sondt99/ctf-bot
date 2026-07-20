@@ -13,6 +13,7 @@ from discord.ext import commands
 from bot.config import CTF_REMOVE_PASSWORD
 from bot.db.repository import Repository
 from bot.services.ctftime import fetch_archived_events, fetch_event, fetch_running_events, fetch_upcoming_events
+from bot.services.platform import create_adapter
 from bot.services.guild_setup import (
     create_ctf_category_and_channels,
     delete_ctf_category_and_channels,
@@ -568,6 +569,300 @@ class CtfCog(commands.Cog):
             content=f"Export for **{event.event_title}** ({len(challenges)} challenges)",
             file=discord_file,
         )
+
+    @ctf.command(name="connect", description="Connect CTF event to a platform (CTFd/rCTF)")
+    @app_commands.describe(
+        platform="Platform type",
+        url="Platform URL (e.g. https://ctf.example.com)",
+        event_id="CTFtime event ID (required if multiple events)",
+    )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="CTFd", value="ctfd"),
+        app_commands.Choice(name="rCTF", value="rctf"),
+    ])
+    @app_commands.default_permissions(administrator=True)
+    async def connect(
+        self,
+        interaction: discord.Interaction,
+        platform: str,
+        url: str,
+        event_id: int | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+                ephemeral=True,
+            )
+            return
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Admin only",
+                    "Only admins can connect platforms.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        event = await self._resolve_event(interaction, event_id)
+        if event is None:
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        url = url.strip().rstrip("/")
+        if not url:
+            await interaction.followup.send(
+                embed=build_simple_embed("Invalid URL", "Platform URL cannot be empty."),
+                ephemeral=True,
+            )
+            return
+
+        await self.repo.upsert_platform_config(
+            guild_id=interaction.guild.id,
+            ctftime_event_id=event.ctftime_event_id,
+            platform_type=platform,
+            platform_url=url,
+            team_token=None,
+            team_name=None,
+            category_mapping={},
+        )
+
+        account_channel_id = event.channels.get("Account") or event.channels.get("account")
+        account_channel: discord.TextChannel | None = None
+        if account_channel_id:
+            ch = interaction.guild.get_channel(int(account_channel_id))
+            if isinstance(ch, discord.TextChannel):
+                account_channel = ch
+
+        if account_channel is not None:
+            if platform == "ctfd":
+                instructions = (
+                    "**How to get your token:**\n"
+                    "1. Log in to the CTFd platform\n"
+                    "2. Go to **Settings** -> **Access Tokens** -> **Generate**\n"
+                    "3. Copy the token and run:\n"
+                    "```\n/auth token <your-token>\n```"
+                )
+            else:
+                instructions = (
+                    "**How to authenticate:**\n"
+                    "**Option 1 — Team token (recommended):**\n"
+                    "Use your team token from registration:\n"
+                    "```\n/auth login <team-token>\n```\n"
+                    "**Option 2 — Auth token:**\n"
+                    "If you already have an auth token:\n"
+                    "```\n/auth token <auth-token>\n```"
+                )
+
+            guide_embed = discord.Embed(
+                title=f"Platform Connected — {event.event_title}",
+                description=(
+                    f"**Platform:** {platform.upper()}\n"
+                    f"**URL:** {url}\n\n"
+                    f"{instructions}"
+                ),
+                color=discord.Color.teal(),
+            )
+            try:
+                await account_channel.send(embed=guide_embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        await interaction.followup.send(
+            embed=build_simple_embed(
+                "Platform connected",
+                f"**{platform.upper()}** linked to **{event.event_title}**.\n"
+                f"URL: {url}"
+                + (f"\nSetup guide posted to <#{account_channel.id}>." if account_channel else ""),
+            ),
+            ephemeral=True,
+        )
+
+    # ── /ctf info ────────────────────────────────────────────────────
+
+    @ctf.command(name="info", description="Show event and platform details")
+    @app_commands.describe(event_id="CTFtime event ID (optional if single event)")
+    async def info(
+        self, interaction: discord.Interaction, event_id: int | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+            )
+            return
+
+        event = await self._resolve_event(interaction, event_id)
+        if event is None:
+            return
+
+        await interaction.response.defer()
+
+        config = await self.repo.get_platform_config(
+            interaction.guild.id, event.ctftime_event_id,
+        )
+
+        embed = discord.Embed(
+            title=event.event_title,
+            color=discord.Color.teal(),
+        )
+
+        time_parts: list[str] = []
+        if event.start_time:
+            time_parts.append(f"Start: {event.start_time}")
+        if event.finish_time:
+            time_parts.append(f"End: {event.finish_time}")
+        embed.add_field(
+            name="Event",
+            value=(
+                f"CTFtime ID: `{event.ctftime_event_id}`\n"
+                + ("\n".join(time_parts) + "\n" if time_parts else "")
+                + f"Category: <#{event.category_id}>"
+            ),
+            inline=False,
+        )
+
+        if config:
+            platform_lines = [
+                f"Type: **{config.platform_type.upper()}**",
+                f"URL: {config.platform_url}",
+            ]
+            if config.team_name:
+                platform_lines.append(f"Team: **{config.team_name}**")
+
+            adapter = create_adapter(
+                config.platform_type, config.platform_url, config.team_token,
+            )
+            try:
+                team_info = await adapter.get_team_info()
+                if team_info:
+                    platform_lines.append(f"\n**Live team info:**")
+                    platform_lines.append(f"Name: {team_info.name}")
+                    platform_lines.append(f"Score: `{team_info.score}`")
+                    if team_info.rank is not None:
+                        platform_lines.append(f"Rank: `#{team_info.rank}`")
+                    if team_info.members:
+                        platform_lines.append(
+                            f"Members: {', '.join(team_info.members[:10])}"
+                        )
+            except Exception:
+                platform_lines.append("*(could not fetch live data)*")
+
+            embed.add_field(
+                name="Platform",
+                value="\n".join(platform_lines),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Platform",
+                value="Not connected. Run `/ctf connect` to link a platform.",
+                inline=False,
+            )
+
+        challenges = await self.repo.list_challenges(
+            interaction.guild.id, event.ctftime_event_id,
+        )
+        total = len(challenges)
+        solved = sum(1 for c in challenges if c.status == "done")
+        embed.add_field(
+            name="Challenges",
+            value=f"{solved}/{total} solved",
+            inline=True,
+        )
+
+        await interaction.followup.send(embed=embed)
+
+    # ── /team ────────────────────────────────────────────────────────
+
+    @app_commands.command(name="team", description="Show team info from the connected platform")
+    @app_commands.describe(event_id="CTFtime event ID (optional if single event)")
+    async def team(
+        self, interaction: discord.Interaction, event_id: int | None = None,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+            )
+            return
+
+        event = await self._resolve_event(interaction, event_id)
+        if event is None:
+            return
+
+        await interaction.response.defer()
+
+        config = await self.repo.get_platform_config(
+            interaction.guild.id, event.ctftime_event_id,
+        )
+        if config is None:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "No platform",
+                    "Run `/ctf connect` first to link a platform.",
+                ),
+            )
+            return
+
+        adapter = create_adapter(
+            config.platform_type, config.platform_url, config.team_token,
+        )
+
+        try:
+            team_info = await adapter.get_team_info()
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Fetch failed",
+                    f"Could not get team info: {str(exc)[:300]}",
+                ),
+            )
+            return
+
+        if team_info is None:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "No team data",
+                    "Platform returned no team info. A team token may be required.",
+                ),
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"Team: {team_info.name}",
+            color=discord.Color.teal(),
+        )
+        lines = [f"Score: `{team_info.score}`"]
+        if team_info.rank is not None:
+            lines.append(f"Rank: `#{team_info.rank}`")
+        if team_info.members:
+            lines.append(f"Members: {', '.join(team_info.members[:20])}")
+        embed.add_field(name="Stats", value="\n".join(lines), inline=False)
+
+        try:
+            solves = await adapter.get_team_solves()
+            if solves:
+                recent = solves[:10]
+                solve_lines = []
+                for s in recent:
+                    line = f"- **{s.challenge_name}**"
+                    if s.solver:
+                        line += f" by {s.solver}"
+                    if s.solved_at:
+                        line += f" ({s.solved_at})"
+                    solve_lines.append(line)
+                embed.add_field(
+                    name=f"Recent solves ({len(solves)} total)",
+                    value="\n".join(solve_lines)[:1024],
+                    inline=False,
+                )
+        except Exception:
+            pass
+
+        embed.set_footer(
+            text=f"{config.platform_type.upper()} — {event.event_title}",
+        )
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:

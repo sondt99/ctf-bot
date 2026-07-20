@@ -77,6 +77,28 @@ CREATE INDEX IF NOT EXISTS idx_message_events_guild_user
 
 CREATE INDEX IF NOT EXISTS idx_message_events_guild_channel_user
   ON message_events(guild_id, channel_id, user_id);
+
+CREATE TABLE IF NOT EXISTS platform_config (
+  guild_id INTEGER NOT NULL,
+  ctftime_event_id INTEGER NOT NULL,
+  platform_type TEXT NOT NULL,
+  platform_url TEXT NOT NULL,
+  team_token TEXT,
+  team_name TEXT,
+  category_mapping_json TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (guild_id, ctftime_event_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_tokens (
+  guild_id INTEGER NOT NULL,
+  ctftime_event_id INTEGER NOT NULL,
+  discord_user_id INTEGER NOT NULL,
+  auth_token TEXT NOT NULL,
+  platform_username TEXT,
+  validated_at TEXT NOT NULL,
+  PRIMARY KEY (guild_id, ctftime_event_id, discord_user_id)
+);
 """
 
 
@@ -229,4 +251,7 @@ async def init_db(db_path: str) -> None:
         await _ensure_column(db, "challenges", "ctfd_description", "TEXT")
         await _ensure_column(db, "challenges", "ctfd_files_json", "TEXT")
         await _ensure_column(db, "challenges", "ctfd_message_id", "INTEGER")
+        await _ensure_column(db, "challenges", "platform_challenge_id", "TEXT")
+        await _ensure_column(db, "platform_config", "last_notification_id", "TEXT")
+        await _ensure_column(db, "platform_config", "last_solve_ids_json", "TEXT")
         await db.commit()

@@ -33,6 +33,7 @@ class CtfBot(commands.Bot):
         await self.load_extension("bot.cogs.ctf")
         await self.load_extension("bot.cogs.challenge")
         await self.load_extension("bot.cogs.scoreboard_cog")
+        await self.load_extension("bot.cogs.auth")
         await self.load_extension("bot.cogs.audit")
         await self.load_extension("bot.cogs.stats")
 

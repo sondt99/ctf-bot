@@ -229,63 +229,56 @@ class ScoreboardCog(commands.Cog):
                 except Exception:
                     continue
 
-                tracked_team = config.team_name or SCOREBOARD_TEAM_NAME
-                tracked_entry = None
-                if tracked_team:
-                    lower_name = tracked_team.lower()
-                    for entry in entries:
-                        if entry["name"].lower() == lower_name:
-                            tracked_entry = entry
-                            break
-                    if tracked_entry is None:
-                        continue
-                    entries = [tracked_entry]
+                if not entries:
+                    continue
 
-                payload_hash = make_payload_hash(entries)
+                tracked_team = config.team_name or SCOREBOARD_TEAM_NAME
+
+                payload_hash = make_payload_hash(entries[:SCOREBOARD_TOP_N])
                 last_state = await self.repo.get_scoreboard_state(
                     config.guild_id, config.ctftime_event_id
                 )
                 if last_state and last_state.last_hash == payload_hash:
                     continue
 
-                # Detect rank changes only
-                rank_changes = []
+                prev_ranks: dict[str, int] = {}
+                rank_changes: list[str] = []
                 if last_state and last_state.last_payload:
                     try:
                         previous = json.loads(last_state.last_payload)
-                        prev_rank = {e["name"]: e["pos"] for e in previous}
+                        prev_ranks = {e["name"]: e["pos"] for e in previous}
                         for entry in entries[:SCOREBOARD_TOP_N]:
                             name = entry["name"]
-                            if name in prev_rank and prev_rank[name] != entry["pos"]:
-                                delta = prev_rank[name] - entry["pos"]
-                                direction = "up" if delta > 0 else "down"
+                            if name in prev_ranks and prev_ranks[name] != entry["pos"]:
+                                delta = prev_ranks[name] - entry["pos"]
+                                arrow = "▲" if delta > 0 else "▼"
                                 rank_changes.append(
-                                    (name, direction, entry["pos"], entry["score"], delta)
+                                    f"{arrow} **{name}** #{entry['pos']} "
+                                    f"(was #{prev_ranks[name]}, {entry['score']} pts)"
                                 )
                     except Exception:
                         rank_changes = []
 
-                # Update state regardless
                 await self.repo.upsert_scoreboard_state(
                     config.guild_id,
                     config.ctftime_event_id,
                     payload_hash,
-                    json.dumps(entries, ensure_ascii=False),
+                    json.dumps(entries[:SCOREBOARD_TOP_N], ensure_ascii=False),
                 )
 
-                # Only notify when there are rank changes
                 if not rank_changes:
                     continue
-
-                changes = [
-                    f"{name} {direction} to {pos} ({score})"
-                    for name, direction, pos, score, _ in rank_changes
-                ]
 
                 channel = self.bot.get_channel(config.scoreboard_channel_id)
                 if isinstance(channel, discord.TextChannel):
                     embed = build_scoreboard_embed(
-                        entries, changes, config.url, top_n=SCOREBOARD_TOP_N
+                        entries,
+                        rank_changes,
+                        config.url,
+                        top_n=SCOREBOARD_TOP_N,
+                        tracked_team=tracked_team,
+                        prev_ranks=prev_ranks,
+                        event_title=event.event_title,
                     )
                     await channel.send(embed=embed)
 
