@@ -10,11 +10,9 @@ from discord.ext import commands, tasks
 
 from bot.config import SCOREBOARD_POLL_SECONDS, SCOREBOARD_TEAM_NAME, SCOREBOARD_TOP_N
 from bot.db.repository import Repository
-from bot.services.scoreboard_fetcher import (
-    fetch_ctfd_scoreboard,
-    fetch_rctf_scoreboard,
-    make_payload_hash,
-)
+import hashlib
+
+from bot.services.platform import create_adapter
 from bot.utils.embeds import build_scoreboard_embed, build_simple_embed
 
 
@@ -216,16 +214,14 @@ class ScoreboardCog(commands.Cog):
                         pass
 
                 try:
-                    if config.type == "ctfd":
-                        entries = await fetch_ctfd_scoreboard(
-                            config.url, config.auth_token
-                        )
-                    elif config.type == "rctf":
-                        entries = await fetch_rctf_scoreboard(
-                            config.url, config.auth_token
-                        )
-                    else:
-                        continue
+                    adapter = create_adapter(
+                        config.type, config.url, config.auth_token,
+                    )
+                    score_entries = await adapter.get_scoreboard(limit=SCOREBOARD_TOP_N)
+                    entries = [
+                        {"pos": e.pos, "name": e.name, "score": e.score}
+                        for e in score_entries
+                    ]
                 except Exception:
                     continue
 
@@ -234,7 +230,10 @@ class ScoreboardCog(commands.Cog):
 
                 tracked_team = config.team_name or SCOREBOARD_TEAM_NAME
 
-                payload_hash = make_payload_hash(entries[:SCOREBOARD_TOP_N])
+                top = entries[:SCOREBOARD_TOP_N]
+                payload_hash = hashlib.sha256(
+                    json.dumps(top, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest()
                 last_state = await self.repo.get_scoreboard_state(
                     config.guild_id, config.ctftime_event_id
                 )

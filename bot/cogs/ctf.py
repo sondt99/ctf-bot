@@ -4,6 +4,7 @@ import csv
 import hmac
 import io
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import discord
@@ -442,7 +443,6 @@ class CtfCog(commands.Cog):
         pct = int(solved / total * 100) if total > 0 else 0
 
         # Per-category breakdown
-        from collections import defaultdict
         cat_total: dict[str, int] = defaultdict(int)
         cat_solved: dict[str, int] = defaultdict(int)
         for c in challenges:
@@ -466,7 +466,6 @@ class CtfCog(commands.Cog):
         if solved_times:
             latest = max(solved_times)
             try:
-                from datetime import datetime, timezone
                 dt = datetime.fromisoformat(latest).astimezone(timezone.utc)
                 ts = int(dt.timestamp())
                 last_solve = f"\nLast solve: <t:{ts}:R>"

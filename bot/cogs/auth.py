@@ -166,7 +166,7 @@ class AuthCog(commands.Cog):
             await interaction.followup.send(
                 embed=build_simple_embed(
                     "Wrong platform",
-                    "This event uses CTFd. Use `/auth token` instead.",
+                    f"This event uses {config.platform_type}. Use `/auth token` instead.",
                 ),
                 ephemeral=True,
             )

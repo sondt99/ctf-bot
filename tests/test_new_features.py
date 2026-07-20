@@ -155,7 +155,7 @@ async def test_list_challenges_empty_for_other_guild(repo):
 
 def test_format_challenge_list_line_open():
     """Open challenges show status, name, category, and thread — no solvers."""
-    from bot.cogs.challenge import format_challenge_list_line
+    from bot.views.challenge_views import format_challenge_list_line
     from bot.db.repository import Challenge
 
     challenge = Challenge(
@@ -178,7 +178,7 @@ def test_format_challenge_list_line_open():
 
 def test_format_challenge_list_line_solved_with_solvers():
     """Solved challenges list Discord mentions for each solver."""
-    from bot.cogs.challenge import format_challenge_list_line
+    from bot.views.challenge_views import format_challenge_list_line
     from bot.db.repository import Challenge
 
     challenge = Challenge(
@@ -203,7 +203,7 @@ def test_format_challenge_list_line_solved_with_solvers():
 
 def test_format_challenge_list_line_solved_unknown():
     """Done challenges with empty solved_by show an unknown placeholder."""
-    from bot.cogs.challenge import format_challenge_list_line
+    from bot.views.challenge_views import format_challenge_list_line
     from bot.db.repository import Challenge
 
     challenge = Challenge(

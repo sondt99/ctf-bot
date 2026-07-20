@@ -1,4 +1,4 @@
-"""Tests for Feature 1 (CTFd auto-poll detection) and Feature 2 (/ctf export)."""
+"""Tests for platform challenge detection and /ctf export."""
 from __future__ import annotations
 
 import os
@@ -27,31 +27,26 @@ async def repo():
 
 # ── Helpers shared between tests ──────────────────────────────────────────────
 
-def _make_ctfd_challenge(id: int, name: str, category: str = "web"):
-    """Create a minimal CtfdChallenge for testing."""
-    from bot.services.ctfd import CtfdChallenge
+def _make_platform_challenge(id: str, name: str, category: str = "web"):
+    from bot.services.platform import PlatformChallenge
 
-    return CtfdChallenge(
+    return PlatformChallenge(
         id=id,
         name=name,
         category=category,
+        description=f"Description for {name}",
+        author=None,
         value=100,
         solves=5,
-        description=f"Description for {name}",
-        connection_info=None,
-        files=[],
-        tags=[],
-        challenge_type="standard",
-        url=f"http://example.com/challenges#{id}",
     )
 
 
 def _make_challenge_record(
-    ctfd_challenge_id: int | None,
+    ctfd_challenge_id: int | None = None,
+    platform_challenge_id: str | None = None,
     challenge_name: str = "tracked",
     status: str = "open",
 ):
-    """Create a minimal Challenge dataclass for testing."""
     from bot.db.repository import Challenge
 
     return Challenge(
@@ -67,85 +62,68 @@ def _make_challenge_record(
         created_at="2026-01-01T00:00:00+00:00",
         solved_at=None,
         ctfd_challenge_id=ctfd_challenge_id,
+        platform_challenge_id=platform_challenge_id,
     )
 
 
-# ── Feature 1: CTFd auto-poll detection logic ─────────────────────────────────
+# ── Platform challenge detection ─────────────────────────────────────────────
 
-def test_ctfd_poll_new_challenge_detection():
-    """filter_new_ctfd_challenges returns only challenges not yet in the DB."""
-    from bot.cogs.challenge import filter_new_ctfd_challenges
+def test_platform_poll_new_challenge_detection():
+    from bot.cogs.challenge import filter_new_platform_challenges
 
     fetched = [
-        _make_ctfd_challenge(id=1, name="already-tracked"),
-        _make_ctfd_challenge(id=2, name="brand-new"),
-        _make_ctfd_challenge(id=3, name="another-new"),
+        _make_platform_challenge(id="1", name="already-tracked"),
+        _make_platform_challenge(id="2", name="brand-new"),
+        _make_platform_challenge(id="3", name="another-new"),
     ]
     tracked = [
-        _make_challenge_record(ctfd_challenge_id=1, challenge_name="already-tracked"),
+        _make_challenge_record(platform_challenge_id="1", challenge_name="already-tracked"),
     ]
 
-    new_ones = filter_new_ctfd_challenges(fetched, tracked)
+    new_ones = filter_new_platform_challenges(fetched, tracked)
 
     assert len(new_ones) == 2
     ids = {c.id for c in new_ones}
-    assert ids == {2, 3}
-    names = {c.name for c in new_ones}
-    assert "already-tracked" not in names
-    assert "brand-new" in names
-    assert "another-new" in names
+    assert ids == {"2", "3"}
 
 
-def test_ctfd_poll_skips_existing_challenges():
-    """filter_new_ctfd_challenges returns empty list when all fetched are already tracked."""
-    from bot.cogs.challenge import filter_new_ctfd_challenges
+def test_platform_poll_skips_existing():
+    from bot.cogs.challenge import filter_new_platform_challenges
 
     fetched = [
-        _make_ctfd_challenge(id=10, name="chall-a"),
-        _make_ctfd_challenge(id=20, name="chall-b"),
+        _make_platform_challenge(id="10", name="chall-a"),
+        _make_platform_challenge(id="20", name="chall-b"),
     ]
     tracked = [
-        _make_challenge_record(ctfd_challenge_id=10, challenge_name="chall-a"),
-        _make_challenge_record(ctfd_challenge_id=20, challenge_name="chall-b"),
+        _make_challenge_record(platform_challenge_id="10", challenge_name="chall-a"),
+        _make_challenge_record(platform_challenge_id="20", challenge_name="chall-b"),
     ]
 
-    new_ones = filter_new_ctfd_challenges(fetched, tracked)
-
-    assert new_ones == [], "All challenges are already tracked, nothing should be returned"
+    assert filter_new_platform_challenges(fetched, tracked) == []
 
 
-def test_ctfd_poll_no_tracked_returns_all():
-    """filter_new_ctfd_challenges returns everything when nothing is tracked yet."""
-    from bot.cogs.challenge import filter_new_ctfd_challenges
+def test_platform_poll_no_tracked_returns_all():
+    from bot.cogs.challenge import filter_new_platform_challenges
 
     fetched = [
-        _make_ctfd_challenge(id=1, name="first"),
-        _make_ctfd_challenge(id=2, name="second"),
+        _make_platform_challenge(id="1", name="first"),
+        _make_platform_challenge(id="2", name="second"),
     ]
-    tracked: list = []
-
-    new_ones = filter_new_ctfd_challenges(fetched, tracked)
-
-    assert len(new_ones) == 2
+    assert len(filter_new_platform_challenges(fetched, [])) == 2
 
 
-def test_ctfd_poll_ignores_tracked_without_ctfd_id():
-    """Challenges tracked without a ctfd_challenge_id do not block new detections."""
-    from bot.cogs.challenge import filter_new_ctfd_challenges
+def test_platform_poll_backwards_compat_ctfd_id():
+    """Challenges tracked with only ctfd_challenge_id (legacy) still dedup correctly."""
+    from bot.cogs.challenge import filter_new_platform_challenges
 
     fetched = [
-        _make_ctfd_challenge(id=5, name="manual-chall"),
+        _make_platform_challenge(id="5", name="chall"),
     ]
-    # A manually created challenge has ctfd_challenge_id=None
     tracked = [
-        _make_challenge_record(ctfd_challenge_id=None, challenge_name="manual-chall"),
+        _make_challenge_record(ctfd_challenge_id=5, challenge_name="chall"),
     ]
 
-    new_ones = filter_new_ctfd_challenges(fetched, tracked)
-
-    # The fetched challenge (id=5) is NOT in any tracked ctfd_challenge_id, so it's new
-    assert len(new_ones) == 1
-    assert new_ones[0].id == 5
+    assert filter_new_platform_challenges(fetched, tracked) == []
 
 
 # ── Feature 2: /ctf export ────────────────────────────────────────────────────
