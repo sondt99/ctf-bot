@@ -1,0 +1,6 @@
+[submodule "platform/ctfd"]
+	path = platform/ctfd
+	url = https://github.com/ctfd/ctfd
+[submodule "platform/rctf"]
+	path = platform/rctf
+	url = https://github.com/otter-sec/rctf
