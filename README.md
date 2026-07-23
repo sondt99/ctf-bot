@@ -1,192 +1,255 @@
 # Discord CTF Bot
 
-A Discord bot for organizing Capture The Flag competitions. It integrates with CTFtime to fetch events, creates per-event categories and channels, tracks challenges with threads, and polls live scoreboards for CTFd and rCTF platforms.
+Organize Capture The Flag competitions in Discord end-to-end: discover events on [CTFtime](https://ctftime.org), spin up per-event categories, track challenges in threads, connect **CTFd** / **rCTF**, submit flags from Discord, and keep a live scoreboard in sync.
 
-## Documentation
+Built with **Python 3.11+**, `discord.py`, async SQLite (`aiosqlite`), and optional Fernet encryption for platform tokens.
 
-- [Architecture](docs/architecture.md) — component overview and data flow
-- [Database](docs/database.md) — schema, tables, migrations, repository API
-- [Development](docs/development.md) — local setup, testing, type checking
-- [Deployment](docs/deployment.md) — Docker, systemd, environment reference
+---
+
+## Table of contents
+
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Docker](#docker)
+- [Environment variables](#environment-variables)
+- [Commands](#commands)
+- [Typical workflow](#typical-workflow)
+- [Guild layout](#guild-layout)
+- [Permissions](#permissions)
+- [Documentation](#documentation)
+- [Notes](#notes)
+
+---
 
 ## Features
 
-- **CTFtime integration** — browse upcoming, running, and recently ended CTF events with pagination
-- **Challenge management** — create threads per challenge, bulk-import CTFd challenges, reopen mistaken solves, and track solved/open status
-- **Live scoreboard** — periodic polling with change notifications for CTFd and rCTF
-- **CTFd auto-polling** — optionally poll configured CTFd scoreboards and create threads for newly released challenges
-- **Message statistics** — per-user leaderboard, activity breakdown, and historical backfill
-- **Multi-event support** — run multiple CTFs simultaneously, each with its own category
-- **Role-based access** — `@ctf` role members can solve, reopen, and ping challenge threads; admin commands remain admin-only
-- **Audit logging** — automatic private `BOT` category with command logs and manual or scheduled database backups
+| Area | What you get |
+|---|---|
+| **CTFtime** | Browse upcoming, running, and recently archived events with pagination |
+| **Event setup** | One command creates a category, topic channels, and the `@ctf` role |
+| **Challenges** | Threads per challenge; bulk import from CTFd; reopen mistaken solves |
+| **Platforms** | Connect CTFd or rCTF — auth, flag submit, team info, solve sync |
+| **Scoreboard** | Periodic polling with change notifications (CTFd + rCTF public API) |
+| **Auto-poll** | Optionally detect newly released CTFd challenges and open threads |
+| **Stats** | Per-user message leaderboard, activity breakdown, history backfill |
+| **Multi-event** | Run several CTFs at once, each with its own category and config |
+| **Access control** | `@ctf` for solve / reopen / ping; admins for destructive ops |
+| **Ops** | Private `BOT` category for command logs and DB backups |
 
-## Requirements
+---
 
-- Python 3.11+
-- Discord bot token with the [required intents](#permissions)
-
-## Setup
+## Quick start
 
 ```bash
 # 1. Clone and configure
+git clone git@github.com:sondt99/ctf-bot.git
+cd ctf-bot
 cp .env.example .env
-# Edit .env and set DISCORD_TOKEN
+# Edit .env — set DISCORD_TOKEN (and DISCORD_GUILD_ID for fast slash sync)
 
-# 2. Install dependencies
+# 2. Install (prefer a venv)
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Run the bot
+# 3. Run
 python -m bot.main
 ```
 
-## Docker Deployment
+**Requirements:** Python 3.11+ and a Discord bot token with the [required intents and permissions](#permissions).
+
+For tests, linting, and project layout, see [docs/development.md](docs/development.md).
+
+---
+
+## Docker
 
 ```bash
-# 1. Copy and edit the env file
 cp .env.example .env
-# Edit .env: set DISCORD_TOKEN, optionally FERNET_KEY, etc.
+# Set DISCORD_TOKEN; recommended: FERNET_KEY
 
-# 2. Start the bot
 docker compose up -d
-
-# 3. View logs
 docker compose logs -f bot
 
-# 4. Upgrade (after git pull)
+# After git pull
 docker compose build --pull && docker compose up -d
 ```
 
-The SQLite database is stored in a named Docker volume (`bot_data`) so it persists across restarts and container upgrades.
+SQLite lives in the named volume `bot_data` (`DATABASE_PATH=/app/data/ctf_bot.db` inside the container), so data survives restarts and image rebuilds. Schema migrations run on startup.
 
-## Environment Variables
+---
+
+## Environment variables
+
+Copy [`.env.example`](.env.example) and adjust as needed.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `DISCORD_TOKEN` | Yes | — | Discord bot token |
-| `DATABASE_PATH` | No | `ctf_bot.db` | Path to SQLite database file |
-| `SCOREBOARD_POLL_SECONDS` | No | `30` | Scoreboard polling interval (seconds) |
-| `SCOREBOARD_TOP_N` | No | `10` | Number of teams shown in scoreboard updates |
-| `SCOREBOARD_TEAM_NAME` | No | — | Your team name (for scoreboard tracking) |
-| `TIMEZONE` | No | `UTC+7` | Timezone for event display — IANA name (`Asia/Ho_Chi_Minh`) or offset (`UTC+7`) |
-| `CTF_REMOVE_PASSWORD` | No | — | Password required by `/ctf remove` |
-| `DISCORD_GUILD_ID` | No | — | Guild ID for faster slash command sync |
-| `FERNET_KEY` | No | — | Fernet key to encrypt auth tokens at rest (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
-| `CTFD_POLL_INTERVAL_MINUTES` | No | `0` | Auto-poll CTFd scoreboard configs for new challenges (0 = disabled) |
-| `AUTO_BACKUP_INTERVAL_HOURS` | No | `0` | Auto-post database backups to the private `BOT/#backup` channel (0 = disabled) |
+| `DISCORD_TOKEN` | **Yes** | — | Discord bot token |
+| `DISCORD_GUILD_ID` | No | — | Guild ID for instant slash-command sync (recommended while developing) |
+| `DATABASE_PATH` | No | `ctf_bot.db` | SQLite database path |
+| `FERNET_KEY` | No | — | Encrypt auth tokens at rest. Generate with: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `TIMEZONE` | No | `UTC+7` | Event display TZ — IANA (`Asia/Ho_Chi_Minh`) or offset (`UTC+7`) |
+| `SCOREBOARD_POLL_SECONDS` | No | `30` | Scoreboard poll interval |
+| `SCOREBOARD_TOP_N` | No | `10` | Teams shown in scoreboard embeds |
+| `SCOREBOARD_TEAM_NAME` | No | — | Default team name to highlight / track |
+| `CTF_REMOVE_PASSWORD` | No | — | Password required by `/ctf remove` (empty disables the check) |
+| `CTFD_POLL_INTERVAL_MINUTES` | No | `0` | Auto-poll CTFd for new challenges (`0` = off) |
+| `AUTO_BACKUP_INTERVAL_HOURS` | No | `0` | Auto-upload DB to `BOT/#backup` (`0` = off) |
+
+---
 
 ## Commands
 
-### CTF Events
+Permission column: **Everyone** · **`@ctf`** · **Admin**
 
-| Command | Description | Permission |
+### CTF events
+
+| Command | Description | Who |
 |---|---|---|
 | `/ctf upcoming [limit]` | Browse upcoming CTFs from CTFtime | Everyone |
-| `/ctf running [limit]` | List currently active CTFs from CTFtime | Everyone |
-| `/ctf archive [limit] [days]` | List recently ended CTFs (default: last 30 days) | Everyone |
-| `/ctf join <event_id>` | Create category and channels for an event (auto-creates `@ctf` role) | Admin |
-| `/ctf list` | List joined CTFs and their event IDs | Everyone |
-| `/ctf progress [event_id]` | Show challenge progress with per-category breakdown | Everyone |
-| `/ctf export [event_id] [format]` | Export challenge data as JSON or CSV | Everyone |
-| `/ctf hidden [event_id]` | Hide a CTF category from non-admins | Admin |
-| `/ctf remove [event_id] password` | Delete a CTF category and all associated data | Admin |
+| `/ctf running [limit]` | List currently active CTFs | Everyone |
+| `/ctf archive [limit] [days]` | Recently ended CTFs (default: last 30 days) | Everyone |
+| `/ctf join <event_id>` | Create category + channels; auto-create `@ctf` if possible | Admin |
+| `/ctf list` | Joined CTFs and event IDs | Everyone |
+| `/ctf info [event_id]` | Event details, platform link, solve progress | Everyone |
+| `/ctf connect <platform> <url> [event_id]` | Link CTFd or rCTF to a joined event | Admin |
+| `/ctf progress [event_id]` | Challenge progress with per-category breakdown | Everyone |
+| `/ctf export [event_id] [format]` | Export challenges as JSON or CSV | Everyone |
+| `/ctf hidden [event_id]` | Hide the CTF category from non-admins | Admin |
+| `/ctf remove [event_id] password` | Delete category and associated bot data | Admin |
+| `/team [event_id]` | Live team score / rank / members from the connected platform | Everyone |
 
 ### Challenges
 
-| Command | Description | Permission |
+| Command | Description | Who |
 |---|---|---|
-| `/challenge <name>` | Create a thread for a challenge (must be in a topic channel) | Everyone |
-| `/challenge-fetch <event_id> <url> [auth_token]` | Fetch CTFd challenges, map CTFd categories to topic channels, create missing threads, and refresh CTFd embeds only when description/files change | Admin |
-| `/done <solver> [solver2] ...` | Mark a challenge as solved and rename the thread | Admin / `@ctf` role |
-| `/undone` | Reopen a mistakenly solved challenge and remove the `[DONE]` thread prefix | Admin / `@ctf` role |
-| `/challenges [event_id]` | List all challenges with status, solvers, and thread links | Everyone |
+| `/challenge <name>` | Create a challenge thread (run in a topic channel) | Everyone |
+| `/challenge-fetch <event_id> <url> [auth_token]` | Import CTFd challenges; map categories → topic channels | Admin |
+| `/challenge-sync [event_id]` | Mark Discord challenges done from platform team solves | Admin |
+| `/challenge-refresh [event_id]` | Re-fetch challenge metadata and refresh embeds | Admin |
+| `/done <solver> [solver2] …` | Mark solved; rename thread with `[DONE]` | Admin / `@ctf` |
+| `/undone` | Reopen a mistaken solve; drop the `[DONE]` prefix | Admin / `@ctf` |
+| `/submit <flag>` | Submit a flag via the connected platform (in a challenge thread) | Everyone\* |
+| `/challenges [event_id]` | List challenges with status, solvers, and thread links | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
-| `/ping [message] [event_id]` | Ping `@ctf` in every open challenge thread for an event | Admin / `@ctf` role |
+| `/ping [message] [event_id]` | Ping `@ctf` in every open challenge thread | Admin / `@ctf` |
+
+\*`/submit` needs a saved user token (`/auth`) or a team token on the platform config.
+
+### Auth (platform)
+
+| Command | Description | Who |
+|---|---|---|
+| `/auth token <token> [event_id]` | Save and validate your CTFd / rCTF API token | Everyone |
+| `/auth login <team_token> [event_id]` | Exchange an rCTF team token for an auth token | Everyone |
+| `/auth status [event_id]` | Check whether your token is still valid | Everyone |
 
 ### Scoreboard
 
-| Command | Description | Permission |
+| Command | Description | Who |
 |---|---|---|
-| `/scoreboard <type> <url> [auth_token] [team] [event_id]` | Configure scoreboard polling (`CTFd` or `rCTF`) | Admin |
-| `/scoreboard_list` | Show active scoreboard configs | Everyone |
-| `/scoreboard_remove <event_id>` | Remove scoreboard config | Admin |
+| `/scoreboard <type> <url> [auth_token] [team] [event_id]` | Configure polling (`CTFd` or `rCTF`) | Admin |
+| `/scoreboard_list` | Active scoreboard configs | Everyone |
+| `/scoreboard_remove <event_id>` | Remove a scoreboard config | Admin |
 
 ### Statistics
 
-| Command | Description | Permission |
+| Command | Description | Who |
 |---|---|---|
 | `/stats leaderboard [limit] [channel]` | Top users by message count | Everyone |
-| `/stats user <member>` | Per-user message stats, rank, and active channels | Everyone |
+| `/stats user <member>` | Per-user stats, rank, and active channels | Everyone |
 | `/stats sync [limit_per_channel] [channel]` | Backfill message history into stats | Admin |
 
-### Audit and Backup
+### Ops
 
-| Command | Description | Permission |
+| Command | Description | Who |
 |---|---|---|
-| `/backup` | Upload the SQLite database to the private `BOT/#backup` channel | Admin |
+| `/backup` | Upload the SQLite DB to private `BOT/#backup` | Admin |
 
-## Workflow
+---
 
-```
-1. /ctf join <event_id>          → Bot creates category with topic channels
-2. /challenge-fetch <event_id> <ctfd_url> [token]
-                                  → Bot asks how to map CTFd categories, then imports into topic threads
-3. Or go to a topic channel and run /challenge <name> for manual threads
-4. Work on the challenge in the thread
-5. /done @solver                 → Mark solved, thread renamed to [DONE]
-   /undone                       → Reopen it if /done was used by mistake
-6. /ping                         → Remind solvers in every open challenge thread
-7. /challenges                   → Overview with clickable thread links
-```
+## Typical workflow
 
-## Channels Created on Join
-
-Each CTF event gets a Discord category named after the event, containing:
-
-```
-account       — read-only info channel
-general       — general discussion
-rev           — reverse engineering
-pwn           — binary exploitation
-web           — web challenges
-crypto        — cryptography
-for           — forensics
-misc          — miscellaneous
-scoreboard    — live scoreboard updates
+```text
+1. /ctf upcoming                  → pick an event_id
+2. /ctf join <event_id>           → category + topic channels + @ctf role
+3. /ctf connect ctfd|rctf <url>   → link platform; guide posted to #account
+4. Members: /auth token …         → or /auth login <team-token> on rCTF
+5. /challenge-fetch …             → import CTFd challenges into topic threads
+   — or — /challenge <name>       → manual thread in a topic channel
+6. Work in the thread
+7. /submit <flag>                 → live submit; auto-[DONE] on success
+   — or — /done @solver           → mark solved without platform submit
+8. /challenge-sync                → catch solves done outside Discord
+9. /scoreboard ctfd|rctf <url>    → live standings in #scoreboard
+10. /challenges · /ctf progress · /team · /ctf info
 ```
 
-## BOT Admin Category
+---
 
-On startup, the bot creates a private `BOT` category visible only to admins:
+## Guild layout
 
-- **#log** — command usage logs
-- **#backup** — database uploads created by `/backup`
+### Per-event category
+
+Created by `/ctf join`, named after the event:
+
+| Channel | Purpose |
+|---|---|
+| `#account` | Read-only info (platform connect guide, tokens tips) |
+| `#general` | Team discussion |
+| `#rev` / `#pwn` / `#web` / `#crypto` / `#for` / `#misc` | Topic channels — challenge threads live here |
+| `#scoreboard` | Live scoreboard embeds |
+
+### Private `BOT` category
+
+Created on startup; visible to admins (and the bot) only:
+
+| Channel | Purpose |
+|---|---|
+| `#log` | Command usage audit |
+| `#backup` | Manual (`/backup`) and scheduled DB uploads |
+
+---
 
 ## Permissions
 
-The bot requires these Discord permissions:
+Invite the bot with scopes **`bot`** + **`applications.commands`**.
 
-| Permission | Reason |
+| Discord permission | Why |
 |---|---|
-| Manage Channels | Create categories, channels, and threads |
+| Manage Channels | Categories, channels, threads |
 | Create Public Threads | Challenge threads |
+| Send Messages / Embed Links | Replies and embeds |
 | Read Message History | `/stats sync` backfill |
-| Send Messages | Thread creation and responses |
-| Embed Links | All bot responses use embeds |
-| Manage Roles | (Optional) if you want the bot to manage the `@ctf` role |
+| Manage Roles | Optional — auto-create / manage `@ctf` |
 
-**Required intents** (enable in the Discord Developer Portal):
+**Privileged intents** (Discord Developer Portal → Bot):
 
-- Server Members
-- Message Content (if using prefix commands in the future)
+- **Server Members Intent**
+- **Message Content Intent** (stats and any future prefix use)
+
+Full invite checklist: [docs/deployment.md](docs/deployment.md#discord-bot-setup).
+
+---
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [Architecture](docs/architecture.md) | Components, data flow, background tasks |
+| [Database](docs/database.md) | Schema, migrations, repository API |
+| [Development](docs/development.md) | Local setup, tests, linting, structure |
+| [Deployment](docs/deployment.md) | Docker, systemd, env reference, backups |
+
+---
 
 ## Notes
 
-- `/ctf join` auto-creates the `@ctf` role when the bot has `Manage Roles`; create it manually if Discord permissions prevent auto-creation.
-- `@ctf` members can use `/done`, `/undone`, and `/ping`; other administrative commands require Discord administrator permission.
-- `/challenge-fetch` asks for category mapping every run, so new CTFd categories added mid-event can be routed before import.
-- Existing CTFd challenge threads are updated only when the description or file links change; point/solve-count changes alone are skipped. Threads marked with `/done` are not updated until reopened with `/undone`.
-- `/challenge-fetch` accepts either a full CTFd URL (`http://localhost:8000`) or a host-only URL (`localhost:8000`).
-- `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd `/scoreboard` configs to detect newly released challenges; it does not ask for manual category mapping and falls back to default topic mapping.
-- Message statistics only track messages sent after the bot is deployed, unless you run `/stats sync`.
-- Scoreboard polling for rCTF uses the public API directly — no browser dependency required.
-- The bot uses SQLite. For production use, ensure the database file is on a persistent volume.
+- **`@ctf` role** — auto-created on `/ctf join` when the bot has Manage Roles; create it manually otherwise. Members can use `/done`, `/undone`, and `/ping`.
+- **Token security** — set `FERNET_KEY` before storing platform tokens so they are encrypted at rest. Without it, tokens are stored in plaintext (a warning is logged at startup).
+- **`/challenge-fetch`** — prompts for category mapping each run so mid-event CTFd categories can be routed. Accepts full URLs (`https://ctf.example.com`) or host-only (`ctf.example.com`). Existing threads update only when description or files change; `[DONE]` threads stay frozen until `/undone`.
+- **CTFd auto-poll** — `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd scoreboard configs, default topic mapping, and no interactive prompts.
+- **rCTF scoreboard** — public API only; no browser automation.
+- **Stats** — only messages after the bot is online, unless you run `/stats sync`.
+- **Production** — keep SQLite on a persistent volume (Docker already uses `bot_data`). Prefer `/backup` or `AUTO_BACKUP_INTERVAL_HOURS` for recovery.
+)
