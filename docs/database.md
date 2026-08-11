@@ -97,6 +97,44 @@ Tracks individual messages for `/stats`. One row per message.
 
 ---
 
+### `platform_config`
+
+Stores per-event platform connection config (set via `/ctf connect`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `guild_id` | INTEGER | |
+| `ctftime_event_id` | INTEGER | |
+| `platform_type` | TEXT | `ctfd` or `rctf` |
+| `platform_url` | TEXT | Base URL |
+| `auth_token` | TEXT | Fernet-encrypted team token |
+| `last_solve_ids` | TEXT | JSON — tracks synced solves |
+| `last_notification_id` | TEXT | nullable |
+| `last_challenge_set` | TEXT | JSON — for synthetic notification diffing |
+
+**Primary key:** `(guild_id, ctftime_event_id)`
+
+---
+
+### `user_tokens`
+
+Per-user platform auth tokens (set via `/auth token` or `/auth login`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `guild_id` | INTEGER | |
+| `ctftime_event_id` | INTEGER | |
+| `discord_user_id` | INTEGER | |
+| `auth_token` | TEXT | Fernet-encrypted |
+| `platform_username` | TEXT | Display name from platform validation |
+| `validated_at` | TEXT | ISO-8601 UTC |
+
+**Primary key:** `(guild_id, ctftime_event_id, discord_user_id)`
+
+Cleaned up atomically by `delete_ctf_event` alongside `platform_config`.
+
+---
+
 ## Migrations
 
 `database.py` runs additive migrations on every startup — no version table needed:
@@ -126,13 +164,20 @@ repo.mark_challenge_done(thread_id, solver_ids)
 repo.mark_challenge_open(thread_id) -> bool
 repo.update_challenge_ctfd_metadata(thread_id, ...)
 repo.delete_challenge_by_thread(thread_id)
-repo.delete_challenges_for_event(guild_id, ctftime_event_id)
-
 # Scoreboard
 repo.upsert_scoreboard_config(guild_id, ctftime_event_id, ...)
-repo.get_scoreboard_config(guild_id, ctftime_event_id) -> ScoreboardConfig | None
 repo.list_scoreboard_configs(guild_id=None) -> list[ScoreboardConfig]
 repo.upsert_scoreboard_state(guild_id, ctftime_event_id, hash, payload)
+
+# Platform config
+repo.upsert_platform_config(guild_id, ctftime_event_id, ...)
+repo.get_platform_config(guild_id, ctftime_event_id) -> PlatformConfig | None
+repo.list_platform_configs(guild_id=None) -> list[PlatformConfig]
+
+# User tokens
+repo.upsert_user_token(guild_id, ctftime_event_id, discord_user_id, ...)
+repo.get_user_token(guild_id, ctftime_event_id, discord_user_id) -> UserToken | None
+repo.delete_user_token(guild_id, ctftime_event_id, discord_user_id) -> bool
 
 # Stats
 repo.record_message(guild_id, channel_id, user_id, message_id, created_at)

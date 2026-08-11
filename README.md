@@ -28,7 +28,8 @@ Built with **Python 3.11+**, `discord.py`, async SQLite (`aiosqlite`), and optio
 | **CTFtime** | Browse upcoming, running, and recently archived events with pagination |
 | **Event setup** | One command creates a category, topic channels, and the `@ctf` role |
 | **Challenges** | Threads per challenge; bulk import from CTFd; reopen mistaken solves |
-| **Platforms** | Connect CTFd or rCTF — auth, flag submit, team info, solve sync |
+| **Platforms** | Connect CTFd or rCTF — auth, flag submit, team info, solve sync, hints, solvers |
+| **Deep integration** | rCTF v2/v1 auto-negotiation; division + rank display; email masking; instancer info |
 | **Scoreboard** | Periodic polling with change notifications (CTFd + rCTF public API) |
 | **Auto-poll** | Optionally detect newly released CTFd challenges and open threads |
 | **Stats** | Per-user message leaderboard, activity breakdown, history backfill |
@@ -131,6 +132,7 @@ Permission column: **Everyone** · **`@ctf`** · **Admin**
 | `/undone` | Reopen a mistaken solve; drop the `[DONE]` prefix | Admin / `@ctf` |
 | `/submit <flag>` | Submit a flag via the connected platform (in a challenge thread) | Everyone\* |
 | `/challenges [event_id]` | List challenges with status, solvers, and thread links | Everyone |
+| `/solvers` | Show who solved the current challenge thread (via platform API) | Everyone |
 | `/remove-challenge` | Untrack the current challenge (keeps the thread) | Admin |
 | `/ping [message] [event_id]` | Ping `@ctf` in every open challenge thread | Admin / `@ctf` |
 
@@ -143,6 +145,7 @@ Permission column: **Everyone** · **`@ctf`** · **Admin**
 | `/auth token <token> [event_id]` | Save and validate your CTFd / rCTF API token | Everyone |
 | `/auth login <team_token> [event_id]` | Exchange an rCTF team token for an auth token | Everyone |
 | `/auth status [event_id]` | Check whether your token is still valid | Everyone |
+| `/auth logout [event_id]` | Remove your saved platform token | Everyone |
 
 ### Scoreboard
 
@@ -249,7 +252,11 @@ Full invite checklist: [docs/deployment.md](docs/deployment.md#discord-bot-setup
 - **Token security** — set `FERNET_KEY` before storing platform tokens so they are encrypted at rest. Without it, tokens are stored in plaintext (a warning is logged at startup).
 - **`/challenge-fetch`** — prompts for category mapping each run so mid-event CTFd categories can be routed. Accepts full URLs (`https://ctf.example.com`) or host-only (`ctf.example.com`). Existing threads update only when description or files change; `[DONE]` threads stay frozen until `/undone`.
 - **CTFd auto-poll** — `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd scoreboard configs, default topic mapping, and no interactive prompts.
+- **rCTF v2 negotiation** — the adapter probes for v2 API support and falls back to v1 transparently. Tags, instancer metadata, and scoring kind are only available on v2.
+- **Hints** — CTFd challenge embeds show locked hints (title + cost) and unlocked hints (content). Unlocking hints from Discord is intentionally disabled — the bot never spends team points.
+- **Instancer** — rCTF v2 challenge embeds show instance lifetime and extendable/stoppable flags. Starting/stopping instances from Discord is not supported.
+- **Division display** — `/team` and `/ctf info` show the rCTF division name and division rank when available.
+- **Email masking** — rCTF member emails are masked (e.g. `al***@domain.com`) in `/team` output.
 - **rCTF scoreboard** — public API only; no browser automation.
 - **Stats** — only messages after the bot is online, unless you run `/stats sync`.
 - **Production** — keep SQLite on a persistent volume (Docker already uses `bot_data`). Prefer `/backup` or `AUTO_BACKUP_INTERVAL_HOURS` for recovery.
-)

@@ -11,7 +11,12 @@ from discord.ext import commands, tasks
 
 from bot.config import CTFD_POLL_INTERVAL_MINUTES
 from bot.db.repository import Challenge, CtfEvent, PlatformConfig, Repository
-from bot.services.platform import PlatformAdapter, PlatformChallenge, create_adapter
+from bot.services.platform import (
+    PlatformAdapter,
+    PlatformChallenge,
+    create_adapter,
+    is_released,
+)
 from bot.utils.embeds import build_simple_embed
 from bot.views.challenge_views import (
     CategoryMappingView,
@@ -38,7 +43,10 @@ def filter_new_platform_challenges(
             tracked_ids.add(c.platform_challenge_id)
         elif c.ctfd_challenge_id is not None:
             tracked_ids.add(str(c.ctfd_challenge_id))
-    return [ch for ch in fetched if ch.id not in tracked_ids]
+    return [
+        ch for ch in fetched
+        if ch.id not in tracked_ids and is_released(ch)
+    ]
 
 
 class ChallengeCog(commands.Cog):
@@ -582,6 +590,40 @@ class ChallengeCog(commands.Cog):
                 value=self._truncate(", ".join(challenge.tags), _EMBED_FIELD_LIMIT),
                 inline=False,
             )
+
+        if challenge.hints:
+            hint_lines: list[str] = []
+            for h in challenge.hints:
+                if h.unlocked and h.content:
+                    hint_lines.append(f"- {h.content}")
+                elif h.title:
+                    cost = f" ({h.cost} pts)" if h.cost else ""
+                    hint_lines.append(f"- *{h.title}*{cost} — locked")
+                elif h.cost:
+                    hint_lines.append(f"- Hint ({h.cost} pts) — locked")
+            if hint_lines:
+                embed.add_field(
+                    name="Hints",
+                    value=self._truncate("\n".join(hint_lines), _EMBED_FIELD_LIMIT),
+                    inline=False,
+                )
+
+        if challenge.instancer:
+            inst = challenge.instancer
+            parts: list[str] = []
+            if inst.lifetime_ms:
+                mins = inst.lifetime_ms // 60000
+                parts.append(f"Lifetime: {mins}m")
+            if inst.extendable:
+                parts.append("Extendable")
+            if inst.stoppable:
+                parts.append("Stoppable")
+            if parts:
+                embed.add_field(
+                    name="Instance",
+                    value=" | ".join(parts),
+                    inline=False,
+                )
 
         return embed
 
@@ -1690,11 +1732,24 @@ class ChallengeCog(commands.Cog):
                     f"**{challenge.challenge_name}** solved by {solver_mention}!",
                 ),
             )
+        elif result.already_solved:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Already Solved",
+                    description=result.message or "You already solved this challenge.",
+                    color=discord.Color.greyple(),
+                ),
+                ephemeral=True,
+            )
         else:
+            description = result.message or "Flag rejected."
+            if result.retry_after_seconds:
+                secs = int(result.retry_after_seconds)
+                description += f"\n\nRate limited — try again in {secs}s."
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="Incorrect",
-                    description=result.message or "Flag rejected.",
+                    description=description,
                     color=discord.Color.red(),
                 ),
                 ephemeral=True,
@@ -2001,6 +2056,126 @@ class ChallengeCog(commands.Cog):
             await thread.edit(name=new_name)
         except (discord.Forbidden, discord.HTTPException) as exc:
             _log.warning("Could not rename thread %s to ACTIVE: %s", thread_id, exc)
+
+
+    # ── /solvers ──────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="solvers",
+        description="Show who solved the current challenge thread",
+    )
+    async def solvers(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed("Guild only", "Use this in a server."),
+                ephemeral=True,
+            )
+            return
+
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Wrong channel",
+                    "Use this command inside a challenge thread.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        challenge = await self.repo.get_challenge_by_thread(thread.id)
+        if challenge is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Not tracked",
+                    "This thread is not tracked as a challenge.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        challenge_id = challenge.platform_challenge_id
+        if challenge_id is None and challenge.ctfd_challenge_id is not None:
+            challenge_id = str(challenge.ctfd_challenge_id)
+        if not challenge_id:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No platform ID",
+                    "This challenge has no platform ID — solvers are only "
+                    "available for platform-linked challenges.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        config = await self.repo.get_platform_config(
+            interaction.guild.id, challenge.ctftime_event_id,
+        )
+        if config is None:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "No platform",
+                    "Run `/ctf connect` first to link a platform.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        adapter = create_adapter(
+            config.platform_type, config.platform_url, config.team_token,
+        )
+
+        if not adapter.supports_challenge_solvers:
+            await interaction.response.send_message(
+                embed=build_simple_embed(
+                    "Not supported",
+                    f"{config.platform_type.upper()} does not support listing solvers.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        try:
+            solver_list = await adapter.get_challenge_solvers(challenge_id)
+        except Exception as exc:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Fetch failed",
+                    f"Could not fetch solvers: {str(exc)[:300]}",
+                ),
+            )
+            return
+
+        if not solver_list:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    f"Solvers — {challenge.challenge_name}",
+                    "No solves yet, or solver data is hidden.",
+                ),
+            )
+            return
+
+        lines: list[str] = []
+        for idx, s in enumerate(solver_list[:25], start=1):
+            line = f"`{idx}.` **{s.name}**"
+            if s.solved_at:
+                line += f" — {s.solved_at}"
+            lines.append(line)
+        if len(solver_list) > 25:
+            lines.append(f"... and {len(solver_list) - 25} more")
+
+        embed = discord.Embed(
+            title=f"Solvers — {challenge.challenge_name}",
+            description="\n".join(lines),
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(
+            text=f"{len(solver_list)} solve(s) | {config.platform_type.upper()}"
+        )
+
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:

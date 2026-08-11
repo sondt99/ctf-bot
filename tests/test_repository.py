@@ -99,9 +99,75 @@ async def test_scoreboard_config_token_passthrough_no_key(repo):
     """Without FERNET_KEY, token is stored and retrieved unchanged."""
     await repo.upsert_ctf_event(1, 500, "CTF", 1, {}, None, None)
     await repo.upsert_scoreboard_config(1, 500, "ctfd", "http://c.com", "my-token", None, 7)
-    cfg = await repo.get_scoreboard_config(1, 500)
-    assert cfg is not None
-    assert cfg.auth_token == "my-token"
+    configs = await repo.list_scoreboard_configs(guild_id=1)
+    assert len(configs) == 1
+    assert configs[0].auth_token == "my-token"
+
+
+# ── Event deletion cascade ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_delete_ctf_event_removes_platform_config(repo):
+    """Deleting an event must not leave its platform config behind."""
+    await repo.upsert_ctf_event(1, 600, "CTF", 1, {}, None, None)
+    await repo.upsert_platform_config(
+        guild_id=1,
+        ctftime_event_id=600,
+        platform_type="ctfd",
+        platform_url="http://c.com",
+        team_token="team-secret",
+        team_name="team",
+        category_mapping={},
+    )
+    assert await repo.get_platform_config(1, 600) is not None
+
+    await repo.delete_ctf_event(1, 600)
+
+    assert await repo.get_platform_config(1, 600) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_ctf_event_removes_user_tokens(repo):
+    """Deleting an event must not leave users' API tokens behind."""
+    await repo.upsert_ctf_event(1, 601, "CTF", 1, {}, None, None)
+    await repo.upsert_user_token(
+        guild_id=1,
+        ctftime_event_id=601,
+        discord_user_id=42,
+        auth_token="user-secret",
+        platform_username="alice",
+    )
+    assert await repo.get_user_token(1, 601, 42) is not None
+
+    await repo.delete_ctf_event(1, 601)
+
+    assert await repo.get_user_token(1, 601, 42) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_ctf_event_scoped_to_event(repo):
+    """Deleting one event must not touch another event's tokens."""
+    await repo.upsert_ctf_event(1, 602, "CTF A", 1, {}, None, None)
+    await repo.upsert_ctf_event(1, 603, "CTF B", 2, {}, None, None)
+    await repo.upsert_user_token(1, 602, 42, "token-a", "alice")
+    await repo.upsert_user_token(1, 603, 42, "token-b", "alice")
+
+    await repo.delete_ctf_event(1, 602)
+
+    assert await repo.get_user_token(1, 602, 42) is None
+    surviving = await repo.get_user_token(1, 603, 42)
+    assert surviving is not None
+    assert surviving.auth_token == "token-b"
+
+
+@pytest.mark.asyncio
+async def test_delete_user_token_reports_removal(repo):
+    """delete_user_token tells the caller whether anything was removed."""
+    await repo.upsert_ctf_event(1, 604, "CTF", 1, {}, None, None)
+    await repo.upsert_user_token(1, 604, 42, "token", "alice")
+
+    assert await repo.delete_user_token(1, 604, 42) is True
+    assert await repo.delete_user_token(1, 604, 42) is False
 
 
 # ── Message Tracking ──────────────────────────────────────────────────────────

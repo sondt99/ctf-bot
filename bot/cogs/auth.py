@@ -217,6 +217,48 @@ class AuthCog(commands.Cog):
             ephemeral=True,
         )
 
+    @auth.command(name="logout", description="Remove your saved platform token")
+    @app_commands.describe(
+        event_id="CTFtime event ID (required if multiple events)",
+    )
+    async def logout(
+        self,
+        interaction: discord.Interaction,
+        event_id: int | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        result = await self._resolve_event_and_config(interaction, event_id)
+        if result is None:
+            return
+        event, config = result
+
+        removed = await self.repo.delete_user_token(
+            interaction.guild.id,  # type: ignore[union-attr]
+            event.ctftime_event_id,
+            interaction.user.id,
+        )
+
+        if removed:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Token removed",
+                    f"Your saved {config.platform_type.upper()} token for "
+                    f"**{event.event_title}** has been deleted.\n"
+                    f"`/submit` will fall back to the shared team token until you "
+                    f"authenticate again.",
+                ),
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Nothing to remove",
+                    f"You have no saved token for **{event.event_title}**.",
+                ),
+                ephemeral=True,
+            )
+
     @auth.command(name="status", description="Check your authentication status")
     @app_commands.describe(
         event_id="CTFtime event ID (required if multiple events)",

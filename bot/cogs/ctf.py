@@ -25,6 +25,18 @@ from bot.utils.embeds import build_simple_embed
 from bot.views.ctf_pagination import CtfPaginationView
 
 
+def _mask_email(value: str) -> str:
+    """If the value looks like an email, mask it for display in Discord."""
+    if "@" in value and "." in value.split("@", 1)[-1]:
+        local, domain = value.rsplit("@", 1)
+        if len(local) <= 2:
+            masked = local[0] + "***"
+        else:
+            masked = local[:2] + "***"
+        return f"{masked}@{domain}"
+    return value
+
+
 class CtfCog(commands.Cog):
     ctf = app_commands.Group(name="ctf", description="CTFtime commands")
 
@@ -740,9 +752,15 @@ class CtfCog(commands.Cog):
                     platform_lines.append(f"Score: `{team_info.score}`")
                     if team_info.rank is not None:
                         platform_lines.append(f"Rank: `#{team_info.rank}`")
+                    if team_info.division:
+                        div_text = team_info.division
+                        if team_info.division_rank is not None:
+                            div_text += f" (#{team_info.division_rank})"
+                        platform_lines.append(f"Division: {div_text}")
                     if team_info.members:
+                        display = [_mask_email(m) for m in team_info.members[:10]]
                         platform_lines.append(
-                            f"Members: {', '.join(team_info.members[:10])}"
+                            f"Members: {', '.join(display)}"
                         )
             except Exception:
                 platform_lines.append("*(could not fetch live data)*")
@@ -834,8 +852,14 @@ class CtfCog(commands.Cog):
         lines = [f"Score: `{team_info.score}`"]
         if team_info.rank is not None:
             lines.append(f"Rank: `#{team_info.rank}`")
+        if team_info.division:
+            div_text = team_info.division
+            if team_info.division_rank is not None:
+                div_text += f" (#{team_info.division_rank})"
+            lines.append(f"Division: {div_text}")
         if team_info.members:
-            lines.append(f"Members: {', '.join(team_info.members[:20])}")
+            display = [_mask_email(m) for m in team_info.members[:20]]
+            lines.append(f"Members: {', '.join(display)}")
         embed.add_field(name="Stats", value="\n".join(lines), inline=False)
 
         try:

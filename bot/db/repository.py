@@ -225,6 +225,16 @@ class Repository:
                 "DELETE FROM scoreboard_config WHERE guild_id=? AND ctftime_event_id=?",
                 (guild_id, ctftime_event_id),
             )
+            # platform_config and user_tokens hold encrypted API tokens; removing the
+            # event has to remove them too or they outlive the data they belong to.
+            await db.execute(
+                "DELETE FROM platform_config WHERE guild_id=? AND ctftime_event_id=?",
+                (guild_id, ctftime_event_id),
+            )
+            await db.execute(
+                "DELETE FROM user_tokens WHERE guild_id=? AND ctftime_event_id=?",
+                (guild_id, ctftime_event_id),
+            )
             await db.execute(
                 "DELETE FROM ctf_events WHERE guild_id=? AND ctftime_event_id=?",
                 (guild_id, ctftime_event_id),
@@ -266,31 +276,6 @@ class Repository:
                 ),
             )
             await db.commit()
-
-    async def get_scoreboard_config(
-        self, guild_id: int, ctftime_event_id: int
-    ) -> ScoreboardConfig | None:
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                """
-                SELECT guild_id, ctftime_event_id, type, url, auth_token, team_name, scoreboard_channel_id
-                FROM scoreboard_config WHERE guild_id=? AND ctftime_event_id=?
-                """,
-                (guild_id, ctftime_event_id),
-            )
-            row = await cursor.fetchone()
-            await cursor.close()
-        if not row:
-            return None
-        return ScoreboardConfig(
-            guild_id=row[0],
-            ctftime_event_id=row[1],
-            type=row[2],
-            url=row[3],
-            auth_token=decrypt_token(row[4], FERNET_KEY),
-            team_name=row[5],
-            scoreboard_channel_id=row[6],
-        )
 
     async def list_scoreboard_configs(
         self, guild_id: int | None = None
@@ -725,16 +710,6 @@ class Repository:
             await db.commit()
             return cursor.rowcount > 0
 
-    async def delete_challenges_for_event(
-        self, guild_id: int, ctftime_event_id: int
-    ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "DELETE FROM challenges WHERE guild_id=? AND ctftime_event_id=?",
-                (guild_id, ctftime_event_id),
-            )
-            await db.commit()
-
     # ── Platform config ─────────────────────────────────────────────
 
     async def upsert_platform_config(
@@ -875,16 +850,6 @@ class Repository:
             )
             await db.commit()
 
-    async def delete_platform_config(
-        self, guild_id: int, ctftime_event_id: int
-    ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "DELETE FROM platform_config WHERE guild_id=? AND ctftime_event_id=?",
-                (guild_id, ctftime_event_id),
-            )
-            await db.commit()
-
     # ── User tokens ─────────────────────────────────────────────────
 
     async def upsert_user_token(
@@ -948,9 +913,10 @@ class Repository:
 
     async def delete_user_token(
         self, guild_id: int, ctftime_event_id: int, discord_user_id: int
-    ) -> None:
+    ) -> bool:
+        """Remove a user's saved token. Returns True if a token was removed."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
+            cursor = await db.execute(
                 """
                 DELETE FROM user_tokens
                 WHERE guild_id=? AND ctftime_event_id=? AND discord_user_id=?
@@ -958,13 +924,5 @@ class Repository:
                 (guild_id, ctftime_event_id, discord_user_id),
             )
             await db.commit()
+            return cursor.rowcount > 0
 
-    async def delete_user_tokens_for_event(
-        self, guild_id: int, ctftime_event_id: int
-    ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "DELETE FROM user_tokens WHERE guild_id=? AND ctftime_event_id=?",
-                (guild_id, ctftime_event_id),
-            )
-            await db.commit()

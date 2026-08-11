@@ -86,8 +86,13 @@ ctf-bot/
 │   ├── config.py      # env-var access
 │   ├── crypto.py      # Fernet token encryption
 │   └── main.py        # entry point
+│   └── services/
+│       └── platform.py  # PlatformAdapter ABC, CTFdAdapter, RCTFAdapter
 ├── tests/             # pytest test suite
 ├── docs/              # this directory
+├── platform/
+│   ├── ctfd/          # CTFd git submodule (reference source for API)
+│   └── rctf/          # rCTF git submodule (reference source for API)
 ├── .env.example
 ├── requirements.txt
 ├── requirements-dev.txt
