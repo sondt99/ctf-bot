@@ -40,6 +40,8 @@ _log = logging.getLogger(__name__)
 # creates one channel per platform category.
 _BASE_CHANNEL_NAMES = {name.casefold() for name in BASE_CHANNELS}
 _EMBED_DESCRIPTION_LIMIT = 3500
+_THREAD_POST_ATTEMPTS = 4
+_ARCHIVED_THREAD_SCAN = 100
 _EMBED_FIELD_LIMIT = 1024
 
 
@@ -188,7 +190,7 @@ class ChallengeCog(commands.Cog):
                 embed = self._build_platform_challenge_embed(
                     event, pc, topic, config.platform_type,
                 )
-                await self._create_tracked_challenge_thread(
+                _thread, posted = await self._create_tracked_challenge_thread(
                     guild=guild,
                     event=event,
                     channel=channel,
@@ -197,7 +199,10 @@ class ChallengeCog(commands.Cog):
                     embed=embed,
                     platform_challenge=pc,
                 )
-                created_names.append(f"{name} ({topic})")
+                created_names.append(
+                    f"{name} ({topic})" if posted
+                    else f"{name} ({topic}) — description pending"
+                )
                 await asyncio.sleep(0.5)
             except (discord.Forbidden, discord.HTTPException) as exc:
                 failed_names.append(f"{name} ({topic}): {exc}")
@@ -483,10 +488,10 @@ class ChallengeCog(commands.Cog):
 
         if message is not None:
             await message.edit(embed=embed)
-            msg_id = message.id
         else:
-            sent = await thread.send(embed=embed)
-            msg_id = sent.id
+            message = await self._post_thread_embed(thread, embed)
+        if message is None:
+            return "post-failed"
 
         ctfd_id: int | None = None
         try:
@@ -498,7 +503,7 @@ class ChallengeCog(commands.Cog):
             ctfd_id or 0,
             new_description,
             new_files,
-            msg_id,
+            message.id,
         )
         return "updated"
 
@@ -661,6 +666,61 @@ class ChallengeCog(commands.Cog):
 
         return embed
 
+    @staticmethod
+    async def _post_thread_embed(
+        thread: discord.Thread, embed: discord.Embed,
+    ) -> discord.Message | None:
+        """Post a thread's opening embed, retrying before giving up.
+
+        A bulk import is exactly when Discord starts handing back 429s and
+        5xxs, and a freshly created thread can briefly 404 on the message
+        endpoint. Returns None once the retries are spent, so the caller can
+        keep the thread and leave the description owed rather than lose both.
+        """
+        delay = 1.0
+        for attempt in range(_THREAD_POST_ATTEMPTS):
+            try:
+                return await thread.send(embed=embed)
+            except discord.Forbidden as exc:
+                _log.warning("No permission to post in thread %s: %s", thread.id, exc)
+                return None
+            except discord.HTTPException as exc:
+                if attempt == _THREAD_POST_ATTEMPTS - 1:
+                    _log.warning(
+                        "Gave up posting embed in thread %s: %s", thread.id, exc
+                    )
+                    return None
+                await asyncio.sleep(delay)
+                delay *= 2
+        return None
+
+    async def _threads_by_name(
+        self,
+        channel: discord.TextChannel,
+        cache: dict[int, dict[str, discord.Thread]],
+    ) -> dict[str, discord.Thread]:
+        """Name -> existing thread for a channel, listed once per run.
+
+        Lets a re-run adopt threads an earlier run left behind. Cached because
+        an import asks about every challenge, and scanning archived threads
+        per challenge would be one API call each.
+        """
+        index = cache.get(channel.id)
+        if index is not None:
+            return index
+
+        index = {thread.name: thread for thread in channel.threads}
+        try:
+            async for archived in channel.archived_threads(
+                limit=_ARCHIVED_THREAD_SCAN
+            ):
+                index.setdefault(archived.name, archived)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        cache[channel.id] = index
+        return index
+
     async def _create_tracked_challenge_thread(
         self,
         guild: discord.Guild,
@@ -670,13 +730,20 @@ class ChallengeCog(commands.Cog):
         topic: str,
         embed: discord.Embed,
         platform_challenge: PlatformChallenge | None = None,
-    ) -> discord.Thread:
+    ) -> tuple[discord.Thread, bool]:
+        """Create and track a challenge thread.
+
+        Returns the thread and whether its embed made it out. The challenge is
+        recorded either way: an untracked thread would be duplicated by the
+        next run, whereas a tracked one with no stored description is repaired
+        by it.
+        """
         thread = await channel.create_thread(
             name=name,
             type=discord.ChannelType.public_thread,
         )
 
-        message = await thread.send(embed=embed)
+        message = await self._post_thread_embed(thread, embed)
 
         ctfd_id: int | None = None
         ctfd_desc: str | None = None
@@ -686,13 +753,16 @@ class ChallengeCog(commands.Cog):
 
         if platform_challenge is not None:
             platform_id = platform_challenge.id
-            ctfd_desc = platform_challenge.description
             ctfd_files = [f.url for f in platform_challenge.files]
-            ctfd_msg_id = message.id
             try:
                 ctfd_id = int(platform_challenge.id)
             except (TypeError, ValueError):
                 pass
+            if message is not None:
+                # Only claim the description once it is actually on screen, so
+                # a later run sees the mismatch and posts what it still owes.
+                ctfd_desc = platform_challenge.description
+                ctfd_msg_id = message.id
 
         await self.repo.create_challenge(
             guild_id=guild.id,
@@ -708,7 +778,61 @@ class ChallengeCog(commands.Cog):
             platform_challenge_id=platform_id,
         )
 
-        return thread
+        return thread, message is not None
+
+    async def _adopt_existing_thread(
+        self,
+        guild: discord.Guild,
+        event: CtfEvent,
+        channel: discord.TextChannel,
+        thread: discord.Thread,
+        name: str,
+        topic: str,
+        embed: discord.Embed,
+        platform_challenge: PlatformChallenge,
+    ) -> bool:
+        """Track a thread an earlier run created but never recorded.
+
+        Reuses the embed already in the thread when there is one, so adopting
+        does not staple a second copy of the description onto it.
+        """
+        bot_user_id = self.bot.user.id if self.bot.user is not None else None
+        message: discord.Message | None = None
+        try:
+            async for msg in thread.history(limit=50, oldest_first=True):
+                if bot_user_id is not None and msg.author.id != bot_user_id:
+                    continue
+                if any(self._is_platform_challenge_embed(e) for e in msg.embeds):
+                    message = msg
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        if message is None:
+            message = await self._post_thread_embed(thread, embed)
+
+        ctfd_id: int | None = None
+        try:
+            ctfd_id = int(platform_challenge.id)
+        except (TypeError, ValueError):
+            pass
+
+        await self.repo.create_challenge(
+            guild_id=guild.id,
+            ctftime_event_id=event.ctftime_event_id,
+            challenge_name=name,
+            category=topic,
+            thread_id=thread.id,
+            channel_id=channel.id,
+            ctfd_challenge_id=ctfd_id,
+            ctfd_description=(
+                platform_challenge.description if message is not None else None
+            ),
+            ctfd_files=[f.url for f in platform_challenge.files],
+            ctfd_message_id=message.id if message is not None else None,
+            platform_challenge_id=platform_challenge.id,
+        )
+        return message is not None
 
     @staticmethod
     def _summary_block(items: list[str], limit: int = 10) -> str:
@@ -794,7 +918,7 @@ class ChallengeCog(commands.Cog):
 
         await interaction.response.defer()
 
-        thread = await self._create_tracked_challenge_thread(
+        thread, _posted = await self._create_tracked_challenge_thread(
             guild=interaction.guild,
             event=event,
             channel=channel,
@@ -998,7 +1122,10 @@ class ChallengeCog(commands.Cog):
             challenge.challenge_name.casefold(): challenge
             for challenge in existing.values()
         }
+        thread_cache: dict[int, dict[str, discord.Thread]] = {}
         created: list[str] = []
+        adopted: list[str] = []
+        pending: list[str] = []
         updated: list[str] = []
         skipped: list[str] = []
         failed: list[str] = []
@@ -1030,6 +1157,8 @@ class ChallengeCog(commands.Cog):
                     skipped.append(f"{name} ({topic}) unchanged -> <#{duplicate.thread_id}>")
                 elif outcome == "missing-thread":
                     failed.append(f"{name} ({topic}): tracked thread not found")
+                elif outcome == "post-failed":
+                    pending.append(f"{name} ({topic}) -> <#{duplicate.thread_id}>")
                 else:
                     skipped.append(f"{name} ({topic}) already tracked -> <#{duplicate.thread_id}>")
                 continue
@@ -1046,23 +1175,46 @@ class ChallengeCog(commands.Cog):
                 failed.append(f"{name} ({topic}): missing topic channel")
                 continue
 
+            challenge_embed = self._build_platform_challenge_embed(
+                event, pc, topic, platform_type,
+            )
+            # A thread with this name that the database has never heard of is
+            # the debris of a run that died between creating it and recording
+            # it. Adopt it rather than hanging a duplicate next to it.
+            orphan = (await self._threads_by_name(channel, thread_cache)).get(name)
             try:
-                thread = await self._create_tracked_challenge_thread(
-                    guild=interaction.guild,
-                    event=event,
-                    channel=channel,
-                    name=name,
-                    topic=topic,
-                    embed=self._build_platform_challenge_embed(
-                        event, pc, topic, platform_type,
-                    ),
-                    platform_challenge=pc,
-                )
+                if orphan is not None:
+                    thread = orphan
+                    posted = await self._adopt_existing_thread(
+                        guild=interaction.guild,
+                        event=event,
+                        channel=channel,
+                        thread=orphan,
+                        name=name,
+                        topic=topic,
+                        embed=challenge_embed,
+                        platform_challenge=pc,
+                    )
+                else:
+                    thread, posted = await self._create_tracked_challenge_thread(
+                        guild=interaction.guild,
+                        event=event,
+                        channel=channel,
+                        name=name,
+                        topic=topic,
+                        embed=challenge_embed,
+                        platform_challenge=pc,
+                    )
             except (discord.Forbidden, discord.HTTPException) as exc:
                 failed.append(f"{name} ({topic}): {exc}")
                 continue
 
-            created.append(f"{name} ({topic}) -> {thread.mention}")
+            if not posted:
+                pending.append(f"{name} ({topic}) -> {thread.mention}")
+            elif orphan is not None:
+                adopted.append(f"{name} ({topic}) -> {thread.mention}")
+            else:
+                created.append(f"{name} ({topic}) -> {thread.mention}")
             await asyncio.sleep(0.5)
             new_challenge = Challenge(
                 id=0,
@@ -1089,6 +1241,7 @@ class ChallengeCog(commands.Cog):
         embed.description = (
             f"Fetched: `{len(fetched_challenges)}` | "
             f"Created: `{len(created)}` | "
+            f"Adopted: `{len(adopted)}` | "
             f"Updated: `{len(updated)}` | "
             f"Skipped: `{len(skipped)}` | "
             f"Failed: `{len(failed)}`"
@@ -1115,6 +1268,24 @@ class ChallengeCog(commands.Cog):
             value=self._truncate(self._summary_block(created), _EMBED_FIELD_LIMIT),
             inline=False,
         )
+        if adopted:
+            embed.add_field(
+                name="Adopted (existing threads)",
+                value=self._truncate(self._summary_block(adopted), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
+        if pending:
+            embed.add_field(
+                name=f"Description pending ({len(pending)})",
+                value=self._truncate(
+                    self._summary_block(pending)
+                    + "\nDiscord refused the embed. Re-run `/challenge-fetch` "
+                    "or `/challenge-refresh` to post it — these threads are "
+                    "tracked, so nothing gets duplicated.",
+                    _EMBED_FIELD_LIMIT,
+                ),
+                inline=False,
+            )
         if updated:
             embed.add_field(
                 name="Updated",
@@ -2041,6 +2212,10 @@ class ChallengeCog(commands.Cog):
 
             if outcome == "updated":
                 updated.append(chall.challenge_name)
+            elif outcome == "post-failed":
+                failed.append(
+                    f"{chall.challenge_name}: Discord refused the embed, still pending"
+                )
             else:
                 skipped.append(chall.challenge_name)
 
