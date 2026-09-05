@@ -14,7 +14,7 @@ from discord.ext import commands
 from bot.config import CTF_REMOVE_PASSWORD
 from bot.db.repository import Repository
 from bot.services.ctftime import fetch_archived_events, fetch_event, fetch_running_events, fetch_upcoming_events
-from bot.services.platform import create_adapter
+from bot.services.platform import RCTFAdapter, create_adapter
 from bot.services.guild_setup import (
     create_ctf_category_and_channels,
     delete_ctf_category_and_channels,
@@ -581,10 +581,45 @@ class CtfCog(commands.Cog):
             file=discord_file,
         )
 
+    @staticmethod
+    async def _resolve_bot_token(
+        platform: str, url: str, token: str,
+    ) -> tuple[str | None, str | None, str]:
+        """Validate a shared bot token, returning ``(token, account, error)``.
+
+        rCTF hands teams a registration token that its API will not accept as a
+        bearer credential, so a token that fails validation is retried through
+        the login exchange before being rejected. What gets stored is always
+        something the adapters can send as-is.
+        """
+        adapter = create_adapter(platform, url, token)
+        try:
+            valid, detail = await adapter.validate_token()
+        except Exception as exc:
+            valid, detail = False, str(exc)
+        if valid:
+            return token, detail, ""
+
+        if platform.strip().lower() != "rctf":
+            return None, None, detail
+
+        auth_token = await RCTFAdapter(url).login_with_team_token(token)
+        if auth_token is None:
+            return None, None, detail
+
+        try:
+            valid, detail = await RCTFAdapter(url, auth_token).validate_token()
+        except Exception as exc:
+            valid, detail = False, str(exc)
+        if valid:
+            return auth_token, detail, ""
+        return None, None, detail
+
     @ctf.command(name="connect", description="Connect CTF event to a platform (CTFd/rCTF)")
     @app_commands.describe(
         platform="Platform type",
         url="Platform URL (e.g. https://ctf.example.com)",
+        token="Shared token for background tasks (rCTF team token, CTFd API token)",
         event_id="CTFtime event ID (required if multiple events)",
     )
     @app_commands.choices(platform=[
@@ -597,6 +632,7 @@ class CtfCog(commands.Cog):
         interaction: discord.Interaction,
         platform: str,
         url: str,
+        token: str | None = None,
         event_id: int | None = None,
     ) -> None:
         if interaction.guild is None:
@@ -629,13 +665,47 @@ class CtfCog(commands.Cog):
             )
             return
 
+        # Re-connecting to fix a typo in the URL must not silently drop the
+        # token the background poller is running on.
+        existing = await self.repo.get_platform_config(
+            interaction.guild.id, event.ctftime_event_id
+        )
+        stored_token = existing.team_token if existing else None
+        team_name = existing.team_name if existing else None
+        token_note = ""
+
+        if token:
+            resolved, account, error = await self._resolve_bot_token(
+                platform, url, token.strip()
+            )
+            if resolved is None:
+                await interaction.followup.send(
+                    embed=build_simple_embed(
+                        "Token rejected",
+                        f"{platform.upper()} did not accept that token: {error}\n"
+                        "The platform is not connected.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            stored_token = resolved
+            team_name = account
+            token_note = f"\nShared token stored, validated as **{account}**."
+        elif stored_token:
+            token_note = "\nExisting shared token kept."
+        else:
+            token_note = (
+                "\nNo shared token — background polling and admin lookups run "
+                "unauthenticated. Re-run with `token:` to add one."
+            )
+
         await self.repo.upsert_platform_config(
             guild_id=interaction.guild.id,
             ctftime_event_id=event.ctftime_event_id,
             platform_type=platform,
             platform_url=url,
-            team_token=None,
-            team_name=None,
+            team_token=stored_token,
+            team_name=team_name,
         )
 
         account_channel_id = event.channels.get("Account") or event.channels.get("account")
@@ -684,6 +754,7 @@ class CtfCog(commands.Cog):
                 "Platform connected",
                 f"**{platform.upper()}** linked to **{event.event_title}**.\n"
                 f"URL: {url}"
+                + token_note
                 + (f"\nSetup guide posted to <#{account_channel.id}>." if account_channel else ""),
             ),
             ephemeral=True,

@@ -226,6 +226,13 @@ def _base_headers() -> dict[str, str]:
     return {
         "Accept": "application/json",
         "Content-Type": "application/json",
+        # Brotli is deliberately not advertised. aiohttp offers it whenever any
+        # `brotli` module imports, but its shim calls `Decompressor.process(data)`
+        # and some distro builds expose a no-argument `process()`, so a br
+        # response dies with "Can not decode content-encoding: br" — a payload
+        # error that reads like a bad token. gzip keeps the bandwidth win and
+        # works on every host.
+        "Accept-Encoding": "gzip, deflate",
         "User-Agent": "ctf-bot/1.0",
     }
 
