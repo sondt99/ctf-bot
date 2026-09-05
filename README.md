@@ -113,7 +113,7 @@ Permission column: **Everyone** · **`@ctf`** · **Admin**
 | `/ctf join <event_id>` | Create category + channels; auto-create `@ctf` if possible | Admin |
 | `/ctf list` | Joined CTFs and event IDs | Everyone |
 | `/ctf info [event_id]` | Event details, platform link, solve progress | Everyone |
-| `/ctf connect <platform> <url> [event_id]` | Link CTFd or rCTF to a joined event | Admin |
+| `/ctf connect <platform> <url> [token] [event_id]` | Link CTFd or rCTF to a joined event; `token` is the shared credential background tasks run on | Admin |
 | `/ctf progress [event_id]` | Challenge progress with per-category breakdown | Everyone |
 | `/ctf export [event_id] [format]` | Export challenges as JSON or CSV | Everyone |
 | `/ctf hidden [event_id]` | Hide the CTF category from non-admins | Admin |
@@ -176,7 +176,8 @@ Permission column: **Everyone** · **`@ctf`** · **Admin**
 ```text
 1. /ctf upcoming                  → pick an event_id
 2. /ctf join <event_id>           → category + topic channels + @ctf role
-3. /ctf connect ctfd|rctf <url>   → link platform; guide posted to #account
+3. /ctf connect ctfd|rctf <url> [token]
+                                  → link platform; guide posted to #account
 4. Members: /auth token …         → or /auth login <team-token> on rCTF
 5. /challenge-fetch …             → import platform challenges into topic threads
    — or — /challenge <name>       → manual thread in a topic channel
@@ -250,6 +251,7 @@ Full invite checklist: [docs/deployment.md](docs/deployment.md#discord-bot-setup
 
 - **`@ctf` role** — auto-created on `/ctf join` when the bot has Manage Roles; create it manually otherwise. Members can use `/done`, `/undone`, and `/ping`.
 - **Token security** — set `FERNET_KEY` before storing platform tokens so they are encrypted at rest. Without it, tokens are stored in plaintext (a warning is logged at startup).
+- **Shared token** — `/ctf connect token:` stores one credential the event's background work runs on: auto-poll, `/solvers`, `/ctf team`, and `/challenge-fetch` when no `auth_token:` is given. It is validated before being stored, and an rCTF team token is exchanged for an auth token first, since rCTF will not accept the registration token as a bearer credential. Re-connecting without `token:` keeps the one already stored. Without it those paths run unauthenticated, which is fine on a platform that publishes challenges and fails on one that does not.
 - **`/challenge-fetch`** — works on both CTFd and rCTF. The platform comes from `/ctf connect`; with an ad-hoc `url` it is fingerprinted from the host, and `platform:` overrides both. Accepts full URLs (`https://ctf.example.com`) or host-only (`ctf.example.com`). Existing threads update only when description or files change; `[DONE]` threads stay frozen until `/undone`.
 - **Channel sync** — one platform category, one channel. Each fetch shows what it would add and remove and waits for confirmation before touching the server. Categories become slugs (`Web Exploitation` → `#web-exploitation`), and `#account`, `#general` and `#scoreboard` are never touched. **Removing a channel deletes its messages permanently.**
 - **CTFd auto-poll** — `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd scoreboard configs and no interactive prompts; it files new challenges into the channel matching their category and reports a miss rather than creating channels unattended.
