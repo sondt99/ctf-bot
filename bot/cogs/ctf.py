@@ -747,7 +747,7 @@ class CtfCog(commands.Cog):
             try:
                 team_info = await adapter.get_team_info()
                 if team_info:
-                    platform_lines.append(f"\n**Live team info:**")
+                    platform_lines.append("\n**Live team info:**")
                     platform_lines.append(f"Name: {team_info.name}")
                     platform_lines.append(f"Score: `{team_info.score}`")
                     if team_info.rank is not None:

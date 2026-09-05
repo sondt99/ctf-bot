@@ -1497,6 +1497,58 @@ class RCTFAdapter(PlatformAdapter):
 # Factory
 # ---------------------------------------------------------------------------
 
+async def detect_platform_type(base_url: str) -> str | None:
+    """Probe a URL and report whether it runs rCTF or CTFd.
+
+    Returns None when neither fingerprint matches, so callers can ask the admin
+    to pick instead of guessing — a wrong guess sends CTFd paths at an rCTF host
+    and surfaces as an opaque 404.
+
+    The probes are unauthenticated on purpose: both platforms answer their own
+    challenge endpoint with a machine-readable JSON envelope even when they
+    reject the request, and an unauthenticated probe never hands a token to a
+    host that turns out to be the other platform.
+    """
+    try:
+        rctf_base = RCTFAdapter._normalize_url(base_url)
+    except RuntimeError:
+        rctf_base = None
+    try:
+        ctfd_base = CTFdAdapter._normalize_url(base_url)
+    except RuntimeError:
+        ctfd_base = None
+    if rctf_base is None and ctfd_base is None:
+        return None
+
+    async with aiohttp.ClientSession(headers=_base_headers()) as session:
+        # rCTF first: it tags every response with `kind`, and CTFd answers the
+        # rCTF path with a plain 404 that carries no such key.
+        if rctf_base is not None:
+            try:
+                result = await _request_json(
+                    session, "GET", f"{rctf_base}api/v1/challs", platform="rCTF",
+                )
+            except Exception:
+                result = None
+            if result is not None and result.is_json and result.payload is not None:
+                if "kind" in result.payload:
+                    return "rctf"
+
+        if ctfd_base is not None:
+            try:
+                result = await _request_json(
+                    session, "GET", f"{ctfd_base}api/v1/challenges", platform="CTFd",
+                )
+            except Exception:
+                result = None
+            if result is not None and result.is_json and result.payload is not None:
+                payload = result.payload
+                if "success" in payload or "data" in payload or result.status in {401, 403}:
+                    return "ctfd"
+
+    return None
+
+
 def create_adapter(
     platform_type: str,
     base_url: str,
