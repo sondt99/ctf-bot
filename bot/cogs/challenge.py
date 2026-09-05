@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import discord
 from discord import app_commands
@@ -15,6 +16,7 @@ from bot.services.platform import (
     PlatformAdapter,
     PlatformChallenge,
     create_adapter,
+    detect_platform_type,
     is_released,
 )
 from bot.utils.embeds import build_simple_embed
@@ -31,6 +33,17 @@ _log = logging.getLogger(__name__)
 _TOPIC_CHANNELS = {"rev", "pwn", "web", "crypto", "for", "misc"}
 _EMBED_DESCRIPTION_LIMIT = 3500
 _EMBED_FIELD_LIMIT = 1024
+
+
+def _same_host(left: str, right: str) -> bool:
+    """True when two URLs point at the same host, ignoring scheme and path."""
+    try:
+        return (
+            urlsplit(left.strip()).netloc.casefold()
+            == urlsplit(right.strip()).netloc.casefold()
+        )
+    except ValueError:
+        return False
 
 
 def filter_new_platform_challenges(
@@ -784,14 +797,20 @@ class ChallengeCog(commands.Cog):
     @app_commands.describe(
         event_id="CTFtime event ID (auto-detected if single event)",
         url="Platform URL (uses /ctf connect config if omitted)",
+        platform="Platform type (auto-detected when omitted)",
         auth_token="API token (uses saved config if omitted)",
     )
+    @app_commands.choices(platform=[
+        app_commands.Choice(name="CTFd", value="ctfd"),
+        app_commands.Choice(name="rCTF", value="rctf"),
+    ])
     @app_commands.default_permissions(administrator=True)
     async def challenge_fetch(
         self,
         interaction: discord.Interaction,
         event_id: int | None = None,
         url: str | None = None,
+        platform: str | None = None,
         auth_token: str | None = None,
     ) -> None:
         if interaction.guild is None:
@@ -819,17 +838,24 @@ class ChallengeCog(commands.Cog):
             interaction.guild.id, event.ctftime_event_id
         )
 
-        platform_type = "ctfd"
+        platform_type: str | None = platform
         fetch_url: str | None = None
         fetch_token: str | None = auth_token
 
         if url:
             fetch_url = url.strip()
-            if platform_config:
+            # The saved type only describes the saved URL. An ad-hoc URL that
+            # points somewhere else gets fingerprinted below instead.
+            if (
+                platform_type is None
+                and platform_config
+                and _same_host(fetch_url, platform_config.platform_url)
+            ):
                 platform_type = platform_config.platform_type
         elif platform_config:
             fetch_url = platform_config.platform_url
-            platform_type = platform_config.platform_type
+            if platform_type is None:
+                platform_type = platform_config.platform_type
             if fetch_token is None:
                 fetch_token = platform_config.team_token
         else:
@@ -845,6 +871,20 @@ class ChallengeCog(commands.Cog):
         if not fetch_url:
             await interaction.followup.send(
                 embed=build_simple_embed("Invalid URL", "Platform URL cannot be empty."),
+                ephemeral=True,
+            )
+            return
+
+        if platform_type is None:
+            platform_type = await detect_platform_type(fetch_url)
+        if platform_type is None:
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Unknown platform",
+                    f"Could not tell whether <{fetch_url}> runs CTFd or rCTF.\n"
+                    "Re-run with the `platform` option, or link the event first "
+                    "with `/ctf connect`.",
+                ),
                 ephemeral=True,
             )
             return
