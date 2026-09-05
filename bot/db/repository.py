@@ -69,7 +69,6 @@ class PlatformConfig:
     platform_url: str
     team_token: str | None  # decrypted
     team_name: str | None
-    category_mapping: dict  # parsed from JSON
     created_at: str
     last_notification_id: str | None = None
     last_solve_ids: list[str] | None = None
@@ -157,6 +156,22 @@ class Repository:
                     finish_time,
                     created_at,
                 ),
+            )
+            await db.commit()
+
+    async def update_event_channels(
+        self, guild_id: int, ctftime_event_id: int, channels: dict,
+    ) -> None:
+        """Replace an event's channel map.
+
+        Narrower than upsert_ctf_event on purpose: channel sync must not be
+        able to overwrite the event's title or schedule.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE ctf_events SET channels_json=? "
+                "WHERE guild_id=? AND ctftime_event_id=?",
+                (json.dumps(channels, ensure_ascii=False), guild_id, ctftime_event_id),
             )
             await db.commit()
 
@@ -720,24 +735,21 @@ class Repository:
         platform_url: str,
         team_token: str | None,
         team_name: str | None,
-        category_mapping: dict,
     ) -> None:
         stored_token = encrypt_token(team_token, FERNET_KEY)
-        category_mapping_json = json.dumps(category_mapping, ensure_ascii=False)
         created_at = _utc_now_iso()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO platform_config
                   (guild_id, ctftime_event_id, platform_type, platform_url,
-                   team_token, team_name, category_mapping_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   team_token, team_name, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id, ctftime_event_id) DO UPDATE SET
                   platform_type=excluded.platform_type,
                   platform_url=excluded.platform_url,
                   team_token=excluded.team_token,
-                  team_name=excluded.team_name,
-                  category_mapping_json=excluded.category_mapping_json
+                  team_name=excluded.team_name
                 """,
                 (
                     guild_id,
@@ -746,7 +758,6 @@ class Repository:
                     platform_url,
                     stored_token,
                     team_name,
-                    category_mapping_json,
                     created_at,
                 ),
             )
@@ -755,9 +766,9 @@ class Repository:
     def _row_to_platform_config(self, row: Any) -> PlatformConfig:
         row = list(row)
         solve_ids = None
-        if len(row) > 9 and row[9]:
+        if len(row) > 8 and row[8]:
             try:
-                parsed = json.loads(row[9])
+                parsed = json.loads(row[8])
                 if isinstance(parsed, list):
                     solve_ids = [str(x) for x in parsed]
             except json.JSONDecodeError:
@@ -769,15 +780,14 @@ class Repository:
             platform_url=row[3],
             team_token=decrypt_token(row[4], FERNET_KEY),
             team_name=row[5],
-            category_mapping=json.loads(row[6]) if row[6] else {},
-            created_at=row[7],
-            last_notification_id=row[8] if len(row) > 8 else None,
+            created_at=row[6],
+            last_notification_id=row[7] if len(row) > 7 else None,
             last_solve_ids=solve_ids,
         )
 
     _PLATFORM_CONFIG_COLS = (
         "guild_id, ctftime_event_id, platform_type, platform_url, "
-        "team_token, team_name, category_mapping_json, created_at, "
+        "team_token, team_name, created_at, "
         "last_notification_id, last_solve_ids_json"
     )
 

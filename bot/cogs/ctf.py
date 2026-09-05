@@ -636,7 +636,6 @@ class CtfCog(commands.Cog):
             platform_url=url,
             team_token=None,
             team_name=None,
-            category_mapping={},
         )
 
         account_channel_id = event.channels.get("Account") or event.channels.get("account")

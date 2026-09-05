@@ -125,7 +125,7 @@ Permission column: **Everyone** · **`@ctf`** · **Admin**
 | Command | Description | Who |
 |---|---|---|
 | `/challenge <name>` | Create a challenge thread (run in a topic channel) | Everyone |
-| `/challenge-fetch [event_id] [url] [platform] [auth_token]` | Import CTFd/rCTF challenges; map categories → topic channels | Admin |
+| `/challenge-fetch [event_id] [url] [platform] [auth_token]` | Import CTFd/rCTF challenges; sync topic channels to the event's categories | Admin |
 | `/challenge-sync [event_id]` | Mark Discord challenges done from platform team solves | Admin |
 | `/challenge-refresh [event_id]` | Re-fetch challenge metadata and refresh embeds | Admin |
 | `/done <solver> [solver2] …` | Mark solved; rename thread with `[DONE]` | Admin / `@ctf` |
@@ -200,7 +200,7 @@ Created by `/ctf join`, named after the event:
 |---|---|
 | `#account` | Read-only info (platform connect guide, tokens tips) |
 | `#general` | Team discussion |
-| `#rev` / `#pwn` / `#web` / `#crypto` / `#for` / `#misc` | Topic channels — challenge threads live here |
+| `#rev` / `#pwn` / `#web` / `#crypto` / `#for` / `#misc` | Default topic channels — challenge threads live here. `/challenge-fetch` reshapes these to the event's real categories |
 | `#scoreboard` | Live scoreboard embeds |
 
 ### Private `BOT` category
@@ -250,8 +250,9 @@ Full invite checklist: [docs/deployment.md](docs/deployment.md#discord-bot-setup
 
 - **`@ctf` role** — auto-created on `/ctf join` when the bot has Manage Roles; create it manually otherwise. Members can use `/done`, `/undone`, and `/ping`.
 - **Token security** — set `FERNET_KEY` before storing platform tokens so they are encrypted at rest. Without it, tokens are stored in plaintext (a warning is logged at startup).
-- **`/challenge-fetch`** — works on both CTFd and rCTF. The platform comes from `/ctf connect`; with an ad-hoc `url` it is fingerprinted from the host, and `platform:` overrides both. Prompts for category mapping each run so mid-event categories can be routed. Accepts full URLs (`https://ctf.example.com`) or host-only (`ctf.example.com`). Existing threads update only when description or files change; `[DONE]` threads stay frozen until `/undone`.
-- **CTFd auto-poll** — `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd scoreboard configs, default topic mapping, and no interactive prompts.
+- **`/challenge-fetch`** — works on both CTFd and rCTF. The platform comes from `/ctf connect`; with an ad-hoc `url` it is fingerprinted from the host, and `platform:` overrides both. Accepts full URLs (`https://ctf.example.com`) or host-only (`ctf.example.com`). Existing threads update only when description or files change; `[DONE]` threads stay frozen until `/undone`.
+- **Channel sync** — one platform category, one channel. Each fetch shows what it would add and remove and waits for confirmation before touching the server. Categories become slugs (`Web Exploitation` → `#web-exploitation`), and `#account`, `#general` and `#scoreboard` are never touched. **Removing a channel deletes its messages permanently.**
+- **CTFd auto-poll** — `CTFD_POLL_INTERVAL_MINUTES` uses active CTFd scoreboard configs and no interactive prompts; it files new challenges into the channel matching their category and reports a miss rather than creating channels unattended.
 - **rCTF v2 negotiation** — the adapter probes for v2 API support and falls back to v1 transparently. Tags, instancer metadata, and scoring kind are only available on v2.
 - **Hints** — CTFd challenge embeds show locked hints (title + cost) and unlocked hints (content). Unlocking hints from Discord is intentionally disabled — the bot never spends team points.
 - **Instancer** — rCTF v2 challenge embeds show instance lifetime and extendable/stoppable flags. Starting/stopping instances from Discord is not supported.
