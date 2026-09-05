@@ -12,6 +12,11 @@ from discord.ext import commands, tasks
 
 from bot.config import CTFD_POLL_INTERVAL_MINUTES
 from bot.db.repository import Challenge, CtfEvent, PlatformConfig, Repository
+from bot.services.guild_setup import (
+    BASE_CHANNELS,
+    apply_channel_sync,
+    plan_channel_sync,
+)
 from bot.services.platform import (
     PlatformAdapter,
     PlatformChallenge,
@@ -21,16 +26,19 @@ from bot.services.platform import (
 )
 from bot.utils.embeds import build_simple_embed
 from bot.views.challenge_views import (
-    CategoryMappingView,
     ChallengesView,
+    ChannelSyncView,
     category_label,
-    default_topic_for_category,
+    channel_name_for_category,
     truncate_text,
 )
 
 _log = logging.getLogger(__name__)
 
-_TOPIC_CHANNELS = {"rev", "pwn", "web", "crypto", "for", "misc"}
+# Every channel in a CTF category is a topic channel except these, which hold
+# the event's own setup. Topics are no longer a fixed list: /challenge-fetch
+# creates one channel per platform category.
+_BASE_CHANNEL_NAMES = {name.casefold() for name in BASE_CHANNELS}
 _EMBED_DESCRIPTION_LIMIT = 3500
 _EMBED_FIELD_LIMIT = 1024
 
@@ -44,6 +52,18 @@ def _same_host(left: str, right: str) -> bool:
         )
     except ValueError:
         return False
+
+
+def _drop_channel_keys(channels: dict, names: list[str]) -> dict:
+    """Drop entries for deleted channels, matching the stored keys case-insensitively.
+
+    Stored keys come from guild setup ("REV", "Account"), while Discord reports
+    the lowercase channel name, so an exact-key pop would leave stale ids behind.
+    """
+    dropped = {name.casefold() for name in names}
+    return {
+        key: value for key, value in channels.items() if key.casefold() not in dropped
+    }
 
 
 def filter_new_platform_challenges(
@@ -150,13 +170,11 @@ class ChallengeCog(commands.Cog):
             len(new_challenges), config.ctftime_event_id, config.guild_id,
         )
 
-        category_mapping = config.category_mapping or {}
         created_names: list[str] = []
         failed_names: list[str] = []
 
         for pc in new_challenges:
-            category = category_label(pc.category)
-            topic = category_mapping.get(category) or default_topic_for_category(category)
+            topic = channel_name_for_category(pc.category)
             channel = self._get_topic_channel(guild, event, topic)
             name = self._sanitize_challenge_name(pc.name)
             if not name:
@@ -392,11 +410,11 @@ class ChallengeCog(commands.Cog):
 
     @staticmethod
     def _channel_topic(channel: discord.TextChannel) -> str | None:
-        """Return the normalised topic name if the channel is a topic channel."""
-        name = channel.name.lower()
-        if name in _TOPIC_CHANNELS:
-            return name.upper()
-        return None
+        """Return the topic name, or None for the event's own setup channels."""
+        name = channel.name.casefold()
+        if name in _BASE_CHANNEL_NAMES:
+            return None
+        return name
 
     @staticmethod
     def _sanitize_challenge_name(name: str) -> str:
@@ -511,15 +529,18 @@ class ChallengeCog(commands.Cog):
     def _get_topic_channel(
         self, guild: discord.Guild, event: CtfEvent, topic: str
     ) -> discord.TextChannel | None:
+        # Stored keys predate the slug scheme ("REV", "FOR"), so match on
+        # casefold rather than on the handful of spellings topic might take.
+        wanted = topic.casefold()
         channel_id = None
-        for key in (topic, topic.title(), topic.lower()):
-            raw_channel_id = event.channels.get(key)
-            if raw_channel_id is not None:
-                try:
-                    channel_id = int(raw_channel_id)
-                except (TypeError, ValueError):
-                    channel_id = None
-                break
+        for key, raw_channel_id in event.channels.items():
+            if key.casefold() != wanted:
+                continue
+            try:
+                channel_id = int(raw_channel_id)
+            except (TypeError, ValueError):
+                channel_id = None
+            break
 
         channel = guild.get_channel(channel_id) if channel_id is not None else None
         if channel is None and channel_id is not None:
@@ -738,7 +759,8 @@ class ChallengeCog(commands.Cog):
             await interaction.response.send_message(
                 embed=build_simple_embed(
                     "Wrong channel",
-                    f"Use this in a topic channel ({', '.join(sorted(_TOPIC_CHANNELS))}).",
+                    "Use this in a topic channel, not "
+                    f"{', '.join(sorted(_BASE_CHANNEL_NAMES))}.",
                 ),
                 ephemeral=True,
             )
@@ -916,43 +938,59 @@ class ChallengeCog(commands.Cog):
             {category_label(ch.category) for ch in fetched_challenges},
             key=str.casefold,
         )
-        mapping_view = CategoryMappingView(
-            author_id=interaction.user.id,
-            categories=categories,
-            challenge_count=len(fetched_challenges),
+        wanted_channels = sorted(
+            {channel_name_for_category(category) for category in categories}
         )
-        mapping_message = await interaction.followup.send(
-            embed=mapping_view.build_embed(),
-            view=mapping_view,
-            ephemeral=True,
-            wait=True,
-        )
-        mapping_view._message = mapping_message
-        await mapping_view.wait()
 
-        if mapping_view.cancelled:
+        discord_category = interaction.guild.get_channel(event.category_id)
+        if not isinstance(discord_category, discord.CategoryChannel):
+            await interaction.followup.send(
+                embed=build_simple_embed(
+                    "Missing CTF category",
+                    "The Discord category for this event no longer exists. "
+                    "Re-create it before importing challenges.",
+                ),
+                ephemeral=True,
+            )
             return
 
-        if not mapping_view.confirmed:
-            try:
-                await mapping_message.edit(
-                    embed=build_simple_embed(
-                        "Mapping timed out",
-                        "No challenge threads were created. Run `/challenge-fetch` again.",
-                    ),
-                    view=None,
-                )
-            except discord.HTTPException:
-                await interaction.followup.send(
-                    embed=build_simple_embed(
-                        "Mapping timed out",
-                        "No challenge threads were created. Run `/challenge-fetch` again.",
-                    ),
-                    ephemeral=True,
-                )
-            return
+        to_create, to_delete = plan_channel_sync(discord_category, wanted_channels)
+        created_channels: dict[str, int] = {}
+        deleted_channels: list[str] = []
+        channel_failures: list[str] = []
 
-        category_mapping = dict(mapping_view.mappings)
+        if to_create or to_delete:
+            sync_view = ChannelSyncView(
+                author_id=interaction.user.id,
+                challenge_count=len(fetched_challenges),
+                categories=categories,
+                to_create=to_create,
+                to_delete=to_delete,
+            )
+            sync_message = await interaction.followup.send(
+                embed=sync_view.build_embed(),
+                view=sync_view,
+                ephemeral=True,
+                wait=True,
+            )
+            sync_view._message = sync_message
+            await sync_view.wait()
+
+            # on_timeout already rewrote the message; cancel said its piece too.
+            if not sync_view.confirmed:
+                return
+
+            created_channels, deleted_channels, channel_failures = (
+                await apply_channel_sync(discord_category, to_create, to_delete)
+            )
+            if created_channels or deleted_channels:
+                channels = _drop_channel_keys(event.channels, deleted_channels)
+                channels.update(created_channels)
+                await self.repo.update_event_channels(
+                    interaction.guild.id, event.ctftime_event_id, channels,
+                )
+                event.channels = channels
+
         existing = await self._existing_challenge_index(
             interaction.guild.id, event.ctftime_event_id
         )
@@ -966,8 +1004,7 @@ class ChallengeCog(commands.Cog):
         failed: list[str] = []
 
         for pc in fetched_challenges:
-            category = category_label(pc.category)
-            topic = category_mapping.get(category, "MISC")
+            topic = channel_name_for_category(pc.category)
             channel = self._get_topic_channel(interaction.guild, event, topic)
             name = self._sanitize_challenge_name(pc.name)
             if not name:
@@ -1056,6 +1093,23 @@ class ChallengeCog(commands.Cog):
             f"Skipped: `{len(skipped)}` | "
             f"Failed: `{len(failed)}`"
         )
+        if created_channels or deleted_channels or channel_failures:
+            lines = []
+            if created_channels:
+                lines.append(
+                    "Added: " + " ".join(f"`#{name}`" for name in created_channels)
+                )
+            if deleted_channels:
+                lines.append(
+                    "Removed: " + " ".join(f"`#{name}`" for name in deleted_channels)
+                )
+            if channel_failures:
+                lines.append("Failed: " + "; ".join(channel_failures))
+            embed.add_field(
+                name="Channels",
+                value=self._truncate("\n".join(lines), _EMBED_FIELD_LIMIT),
+                inline=False,
+            )
         embed.add_field(
             name="Created",
             value=self._truncate(self._summary_block(created), _EMBED_FIELD_LIMIT),
@@ -1080,10 +1134,7 @@ class ChallengeCog(commands.Cog):
                 inline=False,
             )
 
-        try:
-            await mapping_message.edit(embed=embed, view=None)
-        except discord.HTTPException:
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _resolve_event_for_fetch(
         self, interaction: discord.Interaction, event_id: int | None,
@@ -1965,8 +2016,6 @@ class ChallengeCog(commands.Cog):
         tracked = await self.repo.list_challenges(
             interaction.guild.id, event.ctftime_event_id,
         )
-        category_mapping = config.category_mapping or {}
-
         updated: list[str] = []
         skipped: list[str] = []
         failed: list[str] = []
@@ -1980,8 +2029,7 @@ class ChallengeCog(commands.Cog):
                 continue
 
             pc = fetched_by_id[pid]
-            category = category_label(pc.category)
-            topic = category_mapping.get(category) or default_topic_for_category(category)
+            topic = channel_name_for_category(pc.category)
 
             try:
                 outcome = await self._maybe_update_existing_platform_challenge(

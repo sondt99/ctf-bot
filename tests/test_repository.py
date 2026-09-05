@@ -117,7 +117,6 @@ async def test_delete_ctf_event_removes_platform_config(repo):
         platform_url="http://c.com",
         team_token="team-secret",
         team_name="team",
-        category_mapping={},
     )
     assert await repo.get_platform_config(1, 600) is not None
 

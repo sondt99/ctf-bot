@@ -60,7 +60,7 @@ ctf-bot is a Discord bot built with `discord.py` (Cog-based) backed by an async 
 | `bot/cogs/audit.py` | Private BOT category + `/backup` |
 | `bot/services/platform.py` | `PlatformAdapter` ABC, `CTFdAdapter`, `RCTFAdapter` — flag submit, team info, challenges, solvers, hints |
 | `bot/services/ctftime.py` | CTFtime API calls with exponential-backoff retry |
-| `bot/services/ctfd.py` | CTFd challenge fetch, category mapping |
+| `bot/services/platform.py` | CTFd/rCTF adapters, platform fingerprinting |
 | `bot/services/guild_setup.py` | Discord guild structure (categories, channels, `@ctf` role) |
 | `bot/services/scoreboard_fetcher.py` | Scoreboard polling for CTFd and rCTF |
 | `bot/db/database.py` | Schema DDL, WAL init, additive migrations |
@@ -98,7 +98,7 @@ challenge.ChallengeCog (discord.ext.tasks.loop, every N minutes when enabled)
   → repo.list_scoreboard_configs()        # only CTFd configs are eligible
   → fetch_ctfd_challenges(config.url, config.auth_token)
   → compare fetched CTFd IDs against tracked challenges
-  → create threads for newly released challenges using default topic mapping
+  → create threads for newly released challenges in the channel matching their category
   → notify the event's general channel
 ```
 
